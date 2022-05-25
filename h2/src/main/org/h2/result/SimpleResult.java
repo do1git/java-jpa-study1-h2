@@ -1,15 +1,14 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  */
 package org.h2.result;
 
 import java.sql.ResultSetMetaData;
 import java.util.ArrayList;
-import java.util.Comparator;
 
-import org.h2.engine.Session;
+import org.h2.engine.SessionInterface;
 import org.h2.util.Utils;
 import org.h2.value.TypeInfo;
 import org.h2.value.Value;
@@ -17,10 +16,10 @@ import org.h2.value.Value;
 /**
  * Simple in-memory result.
  */
-public class SimpleResult implements ResultInterface, ResultTarget {
+public class SimpleResult implements ResultInterface {
 
     /**
-     * Column info for the simple result.
+     *  Column info for the simple result.
      */
     static final class Column {
         /** Column alias. */
@@ -31,6 +30,15 @@ public class SimpleResult implements ResultInterface, ResultTarget {
 
         /** Column type. */
         final TypeInfo columnType;
+
+        Column(String alias, String columnName, int columnType, long columnPrecision, int columnScale) {
+            if (alias == null || columnName == null) {
+                throw new NullPointerException();
+            }
+            this.alias = alias;
+            this.columnName = columnName;
+            this.columnType = TypeInfo.getTypeInfo(columnType, columnPrecision, columnScale, null);
+        }
 
         Column(String alias, String columnName, TypeInfo columnType) {
             if (alias == null || columnName == null) {
@@ -74,80 +82,42 @@ public class SimpleResult implements ResultInterface, ResultTarget {
 
     private final ArrayList<Value[]> rows;
 
-    private final String schemaName, tableName;
-
     private int rowId;
 
     /**
      * Creates new instance of simple result.
      */
     public SimpleResult() {
-        this("", "");
-    }
-
-    /**
-     * Creates new instance of simple result.
-     *
-     * @param schemaName
-     *            the name of the schema
-     * @param tableName
-     *            the name of the table
-     */
-    public SimpleResult(String schemaName, String tableName) {
         this.columns = Utils.newSmallArrayList();
         this.rows = new ArrayList<>();
-        this.schemaName = schemaName;
-        this.tableName = tableName;
         this.rowId = -1;
     }
 
-    private SimpleResult(ArrayList<Column> columns, ArrayList<Value[]> rows, String schemaName, String tableName) {
+    private SimpleResult(ArrayList<Column> columns, ArrayList<Value[]> rows) {
         this.columns = columns;
         this.rows = rows;
-        this.schemaName = schemaName;
-        this.tableName = tableName;
         this.rowId = -1;
     }
 
     /**
      * Add column to the result.
      *
-     * @param alias
-     *            Column's alias.
-     * @param columnName
-     *            Column's name.
-     * @param columnType
-     *            Column's value type.
-     * @param columnPrecision
-     *            Column's precision.
-     * @param columnScale
-     *            Column's scale.
+     * @param alias Column's alias.
+     * @param columnName Column's name.
+     * @param columnType Column's value type.
+     * @param columnPrecision Column's  precision.
+     * @param columnScale Column's scale.
      */
     public void addColumn(String alias, String columnName, int columnType, long columnPrecision, int columnScale) {
-        addColumn(alias, columnName, TypeInfo.getTypeInfo(columnType, columnPrecision, columnScale, null));
+        addColumn(new Column(alias, columnName, columnType, columnPrecision, columnScale));
     }
 
     /**
      * Add column to the result.
      *
-     * @param columnName
-     *            Column's name.
-     * @param columnType
-     *            Column's type.
-     */
-    public void addColumn(String columnName, TypeInfo columnType) {
-        addColumn(new Column(columnName, columnName, columnType));
-    }
-
-    /**
-     * Add column to the result.
-     *
-     * @param alias
-     *            Column's alias.
-     * @param columnName
-     *            Column's name.
-     * @param columnType
-     *            Column's type.
+     * @param alias Column's alias.
+     * @param columnName Column's name.
+     * @param columnType Column's type.
      */
     public void addColumn(String alias, String columnName, TypeInfo columnType) {
         addColumn(new Column(alias, columnName, columnType));
@@ -156,15 +126,18 @@ public class SimpleResult implements ResultInterface, ResultTarget {
     /**
      * Add column to the result.
      *
-     * @param column
-     *            Column info.
+     * @param column Column info.
      */
     void addColumn(Column column) {
         assert rows.isEmpty();
         columns.add(column);
     }
 
-    @Override
+    /**
+     * Add row to result.
+     *
+     * @param values Row's values.
+     */
     public void addRow(Value... values) {
         assert values.length == columns.size();
         rows.add(values);
@@ -190,7 +163,7 @@ public class SimpleResult implements ResultInterface, ResultTarget {
     }
 
     @Override
-    public long getRowId() {
+    public int getRowId() {
         return rowId;
     }
 
@@ -205,7 +178,7 @@ public class SimpleResult implements ResultInterface, ResultTarget {
     }
 
     @Override
-    public long getRowCount() {
+    public int getRowCount() {
         return rows.size();
     }
 
@@ -231,12 +204,12 @@ public class SimpleResult implements ResultInterface, ResultTarget {
 
     @Override
     public String getSchemaName(int i) {
-        return schemaName;
+        return "";
     }
 
     @Override
     public String getTableName(int i) {
-        return tableName;
+        return "";
     }
 
     @Override
@@ -250,7 +223,7 @@ public class SimpleResult implements ResultInterface, ResultTarget {
     }
 
     @Override
-    public boolean isIdentity(int i) {
+    public boolean isAutoIncrement(int i) {
         return false;
     }
 
@@ -280,23 +253,8 @@ public class SimpleResult implements ResultInterface, ResultTarget {
     }
 
     @Override
-    public SimpleResult createShallowCopy(Session targetSession) {
-        return new SimpleResult(columns, rows, schemaName, tableName);
-    }
-
-    @Override
-    public void limitsWereApplied() {
-        // Nothing to do
-    }
-
-    /**
-     * Sort rows in the list.
-     *
-     * @param comparator
-     *            the comparator
-     */
-    public void sortRows(Comparator<? super Value[]> comparator) {
-        rows.sort(comparator);
+    public ResultInterface createShallowCopy(SessionInterface targetSession) {
+        return new SimpleResult(columns, rows);
     }
 
 }

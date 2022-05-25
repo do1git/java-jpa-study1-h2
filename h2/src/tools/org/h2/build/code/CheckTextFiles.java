@@ -1,19 +1,13 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  */
 package org.h2.build.code;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.IOException;
-import java.nio.file.FileVisitResult;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
+import java.io.RandomAccessFile;
 import java.util.Arrays;
 
 /**
@@ -26,7 +20,7 @@ public class CheckTextFiles {
     private static final int MAX_SOURCE_LINE_SIZE = 120;
 
     // must contain "+" otherwise this here counts as well
-    private static final String COPYRIGHT1 = "Copyright 2004-2022";
+    private static final String COPYRIGHT1 = "Copyright 2004-201";
     private static final String COPYRIGHT2 = "H2 Group.";
     private static final String LICENSE = "Multiple-Licensed " +
             "under the MPL 2.0";
@@ -63,56 +57,72 @@ public class CheckTextFiles {
     }
 
     private void run() throws Exception {
-        Files.walkFileTree(Paths.get("src"), new SimpleFileVisitor<Path>() {
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                check(file);
-                return FileVisitResult.CONTINUE;
-            }
-        });
+        String baseDir = "src";
+        check(new File(baseDir));
         if (hasError) {
             throw new Exception("Errors found");
         }
     }
 
-    void check(Path file) throws IOException {
-        String name = file.getFileName().toString();
-        String suffix = "";
-        int lastDot = name.lastIndexOf('.');
-        if (lastDot >= 0) {
-            suffix = name.substring(lastDot + 1);
-        }
-        boolean check = false, ignore = false;
-        for (String s : SUFFIX_CHECK) {
-            if (suffix.equals(s)) {
-                check = true;
+    private void check(File file) throws Exception {
+        String name = file.getName();
+        if (file.isDirectory()) {
+            if (name.equals("CVS") || name.equals(".svn")) {
+                return;
             }
-        }
-        for (String s : SUFFIX_IGNORE) {
-            if (suffix.equals(s)) {
+            for (File f : file.listFiles()) {
+                check(f);
+            }
+        } else {
+            String suffix = "";
+            int lastDot = name.lastIndexOf('.');
+            if (lastDot >= 0) {
+                suffix = name.substring(lastDot + 1);
+            }
+            boolean check = false, ignore = false;
+            for (String s : SUFFIX_CHECK) {
+                if (suffix.equals(s)) {
+                    check = true;
+                }
+            }
+//            if (name.endsWith(".html") && name.indexOf("_ja") > 0) {
+//                int todoRemoveJapaneseFiles;
+//                // Japanese html files are UTF-8 at this time
+//                check = false;
+//                ignore = true;
+//            }
+            if (name.endsWith(".utf8.txt") ||
+                    (name.startsWith("_docs_") &&
+                    name.endsWith(".properties"))) {
+                check = false;
                 ignore = true;
             }
-        }
-        boolean checkLicense = true;
-        for (String ig : suffixIgnoreLicense) {
-            if (suffix.equals(ig) || name.endsWith(ig)) {
-                checkLicense = false;
-                break;
+            for (String s : SUFFIX_IGNORE) {
+                if (suffix.equals(s)) {
+                    ignore = true;
+                }
             }
-        }
-        if (ignore == check) {
-            throw new RuntimeException("Unknown suffix: " + suffix
-                    + " for file: " + file.toAbsolutePath());
-        }
-        useCRLF = false;
-        for (String s : SUFFIX_CRLF) {
-            if (suffix.equals(s)) {
-                useCRLF = true;
-                break;
+            boolean checkLicense = true;
+            for (String ig : suffixIgnoreLicense) {
+                if (suffix.equals(ig) || name.endsWith(ig)) {
+                    checkLicense = false;
+                    break;
+                }
             }
-        }
-        if (check) {
-            checkOrFixFile(file, AUTO_FIX, checkLicense);
+            if (ignore == check) {
+                throw new RuntimeException("Unknown suffix: " + suffix
+                        + " for file: " + file.getAbsolutePath());
+            }
+            useCRLF = false;
+            for (String s : SUFFIX_CRLF) {
+                if (suffix.equals(s)) {
+                    useCRLF = true;
+                    break;
+                }
+            }
+            if (check) {
+                checkOrFixFile(file, AUTO_FIX, checkLicense);
+            }
         }
     }
 
@@ -126,9 +136,13 @@ public class CheckTextFiles {
      * @param fix automatically fix newline characters and trailing spaces
      * @param checkLicense check the license and copyright
      */
-    public void checkOrFixFile(Path file, boolean fix, boolean checkLicense) throws IOException {
-        byte[] data = Files.readAllBytes(file);
+    public void checkOrFixFile(File file, boolean fix, boolean checkLicense)
+            throws Exception {
+        RandomAccessFile in = new RandomAccessFile(file, "r");
+        byte[] data = new byte[(int) file.length()];
         ByteArrayOutputStream out = fix ? new ByteArrayOutputStream() : null;
+        in.readFully(data);
+        in.close();
         if (checkLicense) {
             if (data.length > COPYRIGHT1.length() + LICENSE.length()) {
                 // don't check tiny files
@@ -178,15 +192,12 @@ public class CheckTextFiles {
                     lastWasWhitespace = false;
                     line++;
                     int lineLength = i - startLinePos;
-                    if (file.getFileName().toString().endsWith(".java")) {
+                    if (file.getName().endsWith(".java")) {
                         if (i > 0 && data[i - 1] == '\r') {
                             lineLength--;
                         }
                         if (lineLength > MAX_SOURCE_LINE_SIZE) {
-                            String s = new String(data, startLinePos, lineLength).trim();
-                            if (!s.startsWith("// http://") && !s.startsWith("// https://")) {
-                                fail(file, "line too long: " + lineLength, line);
-                            }
+                            fail(file, "line too long: " + lineLength, line);
                         }
                     }
                     startLinePos = i;
@@ -252,8 +263,11 @@ public class CheckTextFiles {
         if (fix) {
             byte[] changed = out.toByteArray();
             if (!Arrays.equals(data, changed)) {
-                Files.write(file, changed);
-                System.out.println("CHANGED: " + file.getFileName());
+                RandomAccessFile f = new RandomAccessFile(file, "rw");
+                f.write(changed);
+                f.setLength(changed.length);
+                f.close();
+                System.out.println("CHANGED: " + file.getName());
             }
         }
         line = 1;
@@ -274,12 +288,11 @@ public class CheckTextFiles {
         }
     }
 
-    private void fail(Path file, String error, int line) {
-        file = file.toAbsolutePath();
+    private void fail(File file, String error, int line) {
         if (line <= 0) {
             line = 1;
         }
-        String name = file.toString();
+        String name = file.getAbsolutePath();
         int idx = name.lastIndexOf(File.separatorChar);
         if (idx >= 0) {
             name = name.replace(File.separatorChar, '.');
@@ -289,7 +302,8 @@ public class CheckTextFiles {
                 name = name.substring(idx);
             }
         }
-        System.out.println("FAIL at " + name + " " + error + " " + file.toAbsolutePath());
+        System.out.println("FAIL at " + name + " " + error + " "
+                + file.getAbsolutePath());
         hasError = true;
         if (failOnError) {
             throw new RuntimeException("FAIL");

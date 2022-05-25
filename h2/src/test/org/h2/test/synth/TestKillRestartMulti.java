@@ -1,6 +1,6 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  */
 package org.h2.test.synth;
@@ -59,9 +59,11 @@ public class TestKillRestartMulti extends TestDb {
             // the child process case
             SelfDestructor.startCountdown(CHILD_SELFDESTRUCT_TIMEOUT_MINS);
             new TestKillRestartMulti().test(args);
-        } else {
+        }
+        else
+        {
             // the standalone test case
-            TestBase.createCaller().init().testFromMain();
+            TestBase.createCaller().init().test();
         }
     }
 
@@ -79,7 +81,7 @@ public class TestKillRestartMulti extends TestDb {
     @Override
     public void test() throws Exception {
         deleteDb("killRestartMulti");
-        url = getURL("killRestartMulti;RETENTION_TIME=0", true);
+        url = getURL("killRestartMulti", true);
         user = getUser();
         password = getPassword();
         String selfDestruct = SelfDestructor.getPropertyString(60);
@@ -316,10 +318,7 @@ public class TestKillRestartMulti extends TestDb {
                     rs.getString("NAME");
                 }
             } catch (SQLException e) {
-                if (e.getErrorCode() == ErrorCode.TABLE_OR_VIEW_NOT_FOUND_1 ||
-                        e.getErrorCode() == ErrorCode.TABLE_OR_VIEW_NOT_FOUND_DATABASE_EMPTY_1 ||
-                        e.getErrorCode() == ErrorCode.TABLE_OR_VIEW_NOT_FOUND_WITH_CANDIDATES_2
-                ) {
+                if (e.getErrorCode() == ErrorCode.TABLE_OR_VIEW_NOT_FOUND_1) {
                     // ok
                 } else {
                     throw e;

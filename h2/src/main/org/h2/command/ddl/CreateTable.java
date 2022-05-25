@@ -1,6 +1,6 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  */
 package org.h2.command.ddl;
@@ -10,16 +10,17 @@ import java.util.HashSet;
 import org.h2.api.ErrorCode;
 import org.h2.command.CommandInterface;
 import org.h2.command.dml.Insert;
-import org.h2.command.query.Query;
+import org.h2.command.dml.Query;
 import org.h2.engine.Database;
 import org.h2.engine.DbObject;
-import org.h2.engine.SessionLocal;
+import org.h2.engine.Session;
 import org.h2.expression.Expression;
 import org.h2.message.DbException;
 import org.h2.schema.Schema;
 import org.h2.schema.Sequence;
 import org.h2.table.Column;
 import org.h2.table.Table;
+import org.h2.util.ColumnNamer;
 import org.h2.value.Value;
 
 /**
@@ -34,9 +35,10 @@ public class CreateTable extends CommandWithColumns {
     private boolean onCommitTruncate;
     private Query asQuery;
     private String comment;
+    private boolean sortedInsertMode;
     private boolean withNoData;
 
-    public CreateTable(SessionLocal session, Schema schema) {
+    public CreateTable(Session session, Schema schema) {
         super(session, schema);
         data.persistIndexes = true;
         data.persistData = true;
@@ -59,29 +61,24 @@ public class CreateTable extends CommandWithColumns {
         data.columns.add(column);
     }
 
-    public ArrayList<Column> getColumns() {
-        return data.columns;
-    }
-
     public void setIfNotExists(boolean ifNotExists) {
         this.ifNotExists = ifNotExists;
     }
 
     @Override
-    public long update() {
-        Schema schema = getSchema();
-        boolean isSessionTemporary = data.temporary && !data.globalTemporary;
-        if (!isSessionTemporary) {
-            session.getUser().checkSchemaOwner(schema);
+    public int update() {
+        if (!transactional) {
+            session.commit(true);
         }
         Database db = session.getDatabase();
         if (!db.isPersistent()) {
             data.persistIndexes = false;
         }
+        boolean isSessionTemporary = data.temporary && !data.globalTemporary;
         if (!isSessionTemporary) {
             db.lockMeta(session);
         }
-        if (schema.resolveTableOrView(session, data.tableName) != null) {
+        if (getSchema().resolveTableOrView(session, data.tableName) != null) {
             if (ifNotExists) {
                 return 0;
             }
@@ -105,8 +102,9 @@ public class CreateTable extends CommandWithColumns {
         }
         changePrimaryKeysToNotNull(data.columns);
         data.id = getObjectId();
+        data.create = create;
         data.session = session;
-        Table table = schema.createTable(data);
+        Table table = getSchema().createTable(data);
         ArrayList<Sequence> sequences = generateSequences(data.columns, data.temporary);
         table.setComment(comment);
         if (isSessionTemporary) {
@@ -123,12 +121,28 @@ public class CreateTable extends CommandWithColumns {
         }
         try {
             for (Column c : data.columns) {
-                c.prepareExpressions(session);
+                c.prepareExpression(session);
             }
             for (Sequence sequence : sequences) {
                 table.addSequence(sequence);
             }
             createConstraints();
+            if (asQuery != null && !withNoData) {
+                boolean old = session.isUndoLogEnabled();
+                try {
+                    session.setUndoLogEnabled(false);
+                    session.startStatementWithinTransaction();
+                    Insert insert = new Insert(session);
+                    insert.setSortedInsertMode(sortedInsertMode);
+                    insert.setQuery(asQuery);
+                    insert.setTable(table);
+                    insert.setInsertFromSelect(true);
+                    insert.prepare();
+                    insert.update();
+                } finally {
+                    session.setUndoLogEnabled(old);
+                }
+            }
             HashSet<DbObject> set = new HashSet<>();
             table.addDependencies(set);
             for (DbObject obj : set) {
@@ -146,40 +160,6 @@ public class CreateTable extends CommandWithColumns {
                                     ", this is currently not supported, " +
                                     "as it would prevent the database from " +
                                     "being re-opened");
-                        }
-                    }
-                }
-            }
-            if (asQuery != null && !withNoData) {
-                boolean flushSequences = false;
-                if (!isSessionTemporary) {
-                    db.unlockMeta(session);
-                    for (Column c : table.getColumns()) {
-                        Sequence s = c.getSequence();
-                        if (s != null) {
-                            flushSequences = true;
-                            s.setTemporary(true);
-                        }
-                    }
-                }
-                try {
-                    session.startStatementWithinTransaction(null);
-                    Insert insert = new Insert(session);
-                    insert.setQuery(asQuery);
-                    insert.setTable(table);
-                    insert.setInsertFromSelect(true);
-                    insert.prepare();
-                    insert.update();
-                } finally {
-                    session.endStatement();
-                }
-                if (flushSequences) {
-                    db.lockMeta(session);
-                    for (Column c : table.getColumns()) {
-                        Sequence s = c.getSequence();
-                        if (s != null) {
-                            s.setTemporary(false);
-                            s.flush(session);
                         }
                     }
                 }
@@ -202,9 +182,12 @@ public class CreateTable extends CommandWithColumns {
     private void generateColumnsFromQuery() {
         int columnCount = asQuery.getColumnCount();
         ArrayList<Expression> expressions = asQuery.getExpressions();
+        ColumnNamer columnNamer= new ColumnNamer(session);
         for (int i = 0; i < columnCount; i++) {
             Expression expr = expressions.get(i);
-            addColumn(new Column(expr.getColumnNameForView(session, i), expr.getType()));
+            String name = columnNamer.getColumnName(expr, i, expr.getAlias());
+            Column col = new Column(name, expr.getType());
+            addColumn(col);
         }
     }
 
@@ -239,6 +222,10 @@ public class CreateTable extends CommandWithColumns {
         if (!persistData) {
             data.persistIndexes = false;
         }
+    }
+
+    public void setSortedInsertMode(boolean sortedInsertMode) {
+        this.sortedInsertMode = sortedInsertMode;
     }
 
     public void setWithNoData(boolean withNoData) {

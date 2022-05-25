@@ -1,19 +1,27 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  */
 package org.h2.value;
 
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.Timestamp;
 import org.h2.api.ErrorCode;
-import org.h2.engine.CastDataProvider;
+import org.h2.api.TimestampWithTimeZone;
+import org.h2.engine.SysProperties;
 import org.h2.message.DbException;
 import org.h2.util.DateTimeUtils;
+import org.h2.util.LocalDateTimeUtils;
 
 /**
  * Implementation of the TIMESTAMP WITH TIME ZONE data type.
+ *
+ * @see <a href="https://en.wikipedia.org/wiki/ISO_8601#Time_zone_designators">
+ *      ISO 8601 Time zone designators</a>
  */
-public final class ValueTimestampTimeZone extends Value {
+public class ValueTimestampTimeZone extends Value {
 
     /**
      * The default precision and display size of the textual representation of a timestamp.
@@ -28,6 +36,16 @@ public final class ValueTimestampTimeZone extends Value {
     public static final int MAXIMUM_PRECISION = 35;
 
     /**
+     * The default scale for timestamps.
+     */
+    static final int DEFAULT_SCALE = ValueTimestamp.DEFAULT_SCALE;
+
+    /**
+     * The default scale for timestamps.
+     */
+    static final int MAXIMUM_SCALE = ValueTimestamp.MAXIMUM_SCALE;
+
+    /**
      * A bit field with bits for the year, month, and day (see DateTimeUtils for
      * encoding)
      */
@@ -37,15 +55,13 @@ public final class ValueTimestampTimeZone extends Value {
      */
     private final long timeNanos;
     /**
-     * Time zone offset from UTC in seconds, range of -18 hours to +18 hours. This
+     * Time zone offset from UTC in minutes, range of -18 hours to +18 hours. This
      * range is compatible with OffsetDateTime from JSR-310.
      */
-    private final int timeZoneOffsetSeconds;
+    private final short timeZoneOffsetMins;
 
-    private ValueTimestampTimeZone(long dateValue, long timeNanos, int timeZoneOffsetSeconds) {
-        if (dateValue < DateTimeUtils.MIN_DATE_VALUE || dateValue > DateTimeUtils.MAX_DATE_VALUE) {
-            throw new IllegalArgumentException("dateValue out of range " + dateValue);
-        }
+    private ValueTimestampTimeZone(long dateValue, long timeNanos,
+            short timeZoneOffsetMins) {
         if (timeNanos < 0 || timeNanos >= DateTimeUtils.NANOS_PER_DAY) {
             throw new IllegalArgumentException(
                     "timeNanos out of range " + timeNanos);
@@ -55,14 +71,14 @@ public final class ValueTimestampTimeZone extends Value {
          * JSR-310 determines 18 hours as maximum possible offset in both directions, so
          * we use this limit too for compatibility.
          */
-        if (timeZoneOffsetSeconds < (-18 * 60 * 60)
-                || timeZoneOffsetSeconds > (18 * 60 * 60)) {
+        if (timeZoneOffsetMins < (-18 * 60)
+                || timeZoneOffsetMins > (18 * 60)) {
             throw new IllegalArgumentException(
-                    "timeZoneOffsetSeconds out of range " + timeZoneOffsetSeconds);
+                    "timeZoneOffsetMins out of range " + timeZoneOffsetMins);
         }
         this.dateValue = dateValue;
         this.timeNanos = timeNanos;
-        this.timeZoneOffsetSeconds = timeZoneOffsetSeconds;
+        this.timeZoneOffsetMins = timeZoneOffsetMins;
     }
 
     /**
@@ -71,13 +87,25 @@ public final class ValueTimestampTimeZone extends Value {
      * @param dateValue the date value, a bit field with bits for the year,
      *            month, and day
      * @param timeNanos the nanoseconds since midnight
-     * @param timeZoneOffsetSeconds the timezone offset in seconds
+     * @param timeZoneOffsetMins the timezone offset in minutes
      * @return the value
      */
-    public static ValueTimestampTimeZone fromDateValueAndNanos(long dateValue, long timeNanos,
-            int timeZoneOffsetSeconds) {
+    public static ValueTimestampTimeZone fromDateValueAndNanos(long dateValue,
+            long timeNanos, short timeZoneOffsetMins) {
         return (ValueTimestampTimeZone) Value.cache(new ValueTimestampTimeZone(
-                dateValue, timeNanos, timeZoneOffsetSeconds));
+                dateValue, timeNanos, timeZoneOffsetMins));
+    }
+
+    /**
+     * Get or create a timestamp value for the given timestamp.
+     *
+     * @param timestamp the timestamp
+     * @return the value
+     */
+    public static ValueTimestampTimeZone get(TimestampWithTimeZone timestamp) {
+        return fromDateValueAndNanos(timestamp.getYMD(),
+                timestamp.getNanosSinceMidnight(),
+                timestamp.getTimeZoneOffsetMins());
     }
 
     /**
@@ -86,16 +114,14 @@ public final class ValueTimestampTimeZone extends Value {
      * part.
      *
      * @param s the string to parse
-     * @param provider
-     *            the cast information provider, may be {@code null} for
-     *            literals with time zone
      * @return the date
      */
-    public static ValueTimestampTimeZone parse(String s, CastDataProvider provider) {
+    public static ValueTimestampTimeZone parse(String s) {
         try {
-            return (ValueTimestampTimeZone) DateTimeUtils.parseTimestamp(s, provider, true);
+            return (ValueTimestampTimeZone) DateTimeUtils.parseTimestamp(s, null, true);
         } catch (Exception e) {
-            throw DbException.get(ErrorCode.INVALID_DATETIME_CONSTANT_2, e, "TIMESTAMP WITH TIME ZONE", s);
+            throw DbException.get(ErrorCode.INVALID_DATETIME_CONSTANT_2, e,
+                    "TIMESTAMP WITH TIME ZONE", s);
         }
     }
 
@@ -119,12 +145,17 @@ public final class ValueTimestampTimeZone extends Value {
     }
 
     /**
-     * The time zone offset in seconds.
+     * The timezone offset in minutes.
      *
      * @return the offset
      */
-    public int getTimeZoneOffsetSeconds() {
-        return timeZoneOffsetSeconds;
+    public short getTimeZoneOffsetMins() {
+        return timeZoneOffsetMins;
+    }
+
+    @Override
+    public Timestamp getTimestamp() {
+        return DateTimeUtils.convertTimestampTimeZoneToTimestamp(dateValue, timeNanos, timeZoneOffsetMins);
     }
 
     @Override
@@ -145,36 +176,52 @@ public final class ValueTimestampTimeZone extends Value {
 
     @Override
     public String getString() {
-        return toString(new StringBuilder(MAXIMUM_PRECISION), false).toString();
-    }
-
-    /**
-     * Returns value as string in ISO format.
-     *
-     * @return value as string in ISO format
-     */
-    public String getISOString() {
-        return toString(new StringBuilder(MAXIMUM_PRECISION), true).toString();
+        StringBuilder builder = new StringBuilder(ValueTimestampTimeZone.MAXIMUM_PRECISION);
+        DateTimeUtils.appendTimestampTimeZone(builder, dateValue, timeNanos, timeZoneOffsetMins);
+        return builder.toString();
     }
 
     @Override
-    public StringBuilder getSQL(StringBuilder builder, int sqlFlags) {
-        return toString(builder.append("TIMESTAMP WITH TIME ZONE '"), false).append('\'');
-    }
-
-    private StringBuilder toString(StringBuilder builder, boolean iso) {
-        DateTimeUtils.appendDate(builder, dateValue).append(iso ? 'T' : ' ');
-        DateTimeUtils.appendTime(builder, timeNanos);
-        return DateTimeUtils.appendTimeZone(builder, timeZoneOffsetSeconds);
+    public StringBuilder getSQL(StringBuilder builder) {
+        builder.append("TIMESTAMP WITH TIME ZONE '");
+        DateTimeUtils.appendTimestampTimeZone(builder, dateValue, timeNanos, timeZoneOffsetMins);
+        return builder.append('\'');
     }
 
     @Override
-    public int compareTypeSafe(Value o, CompareMode mode, CastDataProvider provider) {
+    public boolean checkPrecision(long precision) {
+        // TIMESTAMP WITH TIME ZONE data type does not have precision parameter
+        return true;
+    }
+
+    @Override
+    public Value convertScale(boolean onlyToSmallerScale, int targetScale) {
+        if (targetScale >= MAXIMUM_SCALE) {
+            return this;
+        }
+        if (targetScale < 0) {
+            throw DbException.getInvalidValueException("scale", targetScale);
+        }
+        long n = timeNanos;
+        long n2 = DateTimeUtils.convertScale(n, targetScale);
+        if (n2 == n) {
+            return this;
+        }
+        long dv = dateValue;
+        if (n2 >= DateTimeUtils.NANOS_PER_DAY) {
+            n2 -= DateTimeUtils.NANOS_PER_DAY;
+            dv = DateTimeUtils.incrementDateValue(dv);
+        }
+        return fromDateValueAndNanos(dv, n2, timeZoneOffsetMins);
+    }
+
+    @Override
+    public int compareTypeSafe(Value o, CompareMode mode) {
         ValueTimestampTimeZone t = (ValueTimestampTimeZone) o;
         // Maximum time zone offset is +/-18 hours so difference in days between local
         // and UTC cannot be more than one day
         long dateValueA = dateValue;
-        long timeA = timeNanos - timeZoneOffsetSeconds * DateTimeUtils.NANOS_PER_SECOND;
+        long timeA = timeNanos - timeZoneOffsetMins * 60_000_000_000L;
         if (timeA < 0) {
             timeA += DateTimeUtils.NANOS_PER_DAY;
             dateValueA = DateTimeUtils.decrementDateValue(dateValueA);
@@ -183,7 +230,7 @@ public final class ValueTimestampTimeZone extends Value {
             dateValueA = DateTimeUtils.incrementDateValue(dateValueA);
         }
         long dateValueB = t.dateValue;
-        long timeB = t.timeNanos - t.timeZoneOffsetSeconds * DateTimeUtils.NANOS_PER_SECOND;
+        long timeB = t.timeNanos - t.timeZoneOffsetMins * 60_000_000_000L;
         if (timeB < 0) {
             timeB += DateTimeUtils.NANOS_PER_DAY;
             dateValueB = DateTimeUtils.decrementDateValue(dateValueB);
@@ -207,13 +254,39 @@ public final class ValueTimestampTimeZone extends Value {
         }
         ValueTimestampTimeZone x = (ValueTimestampTimeZone) other;
         return dateValue == x.dateValue && timeNanos == x.timeNanos
-                && timeZoneOffsetSeconds == x.timeZoneOffsetSeconds;
+                && timeZoneOffsetMins == x.timeZoneOffsetMins;
     }
 
     @Override
     public int hashCode() {
         return (int) (dateValue ^ (dateValue >>> 32) ^ timeNanos
-                ^ (timeNanos >>> 32) ^ timeZoneOffsetSeconds);
+                ^ (timeNanos >>> 32) ^ timeZoneOffsetMins);
+    }
+
+    @Override
+    public Object getObject() {
+        if (SysProperties.RETURN_OFFSET_DATE_TIME && LocalDateTimeUtils.isJava8DateApiPresent()) {
+            return LocalDateTimeUtils.valueToOffsetDateTime(this);
+        }
+        return new TimestampWithTimeZone(dateValue, timeNanos, timeZoneOffsetMins);
+    }
+
+    @Override
+    public void set(PreparedStatement prep, int parameterIndex)
+            throws SQLException {
+        prep.setString(parameterIndex, getString());
+    }
+
+    @Override
+    public Value add(Value v) {
+        throw DbException.getUnsupportedException(
+                "manipulating TIMESTAMP WITH TIME ZONE values is unsupported");
+    }
+
+    @Override
+    public Value subtract(Value v) {
+        throw DbException.getUnsupportedException(
+                "manipulating TIMESTAMP WITH TIME ZONE values is unsupported");
     }
 
 }

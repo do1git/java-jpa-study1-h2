@@ -1,6 +1,6 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  */
 package org.h2.jdbc;
@@ -15,14 +15,13 @@ import org.h2.message.Trace;
 import org.h2.message.TraceObject;
 import org.h2.util.MathUtils;
 import org.h2.value.DataType;
-import org.h2.value.TypeInfo;
 import org.h2.value.Value;
-import org.h2.value.ValueToObjectConverter;
 
 /**
  * Information about the parameters of a prepared statement.
  */
-public final class JdbcParameterMetaData extends TraceObject implements ParameterMetaData {
+public class JdbcParameterMetaData extends TraceObject implements
+        ParameterMetaData {
 
     private final JdbcPreparedStatement prep;
     private final int paramCount;
@@ -81,11 +80,12 @@ public final class JdbcParameterMetaData extends TraceObject implements Paramete
     public int getParameterType(int param) throws SQLException {
         try {
             debugCodeCall("getParameterType", param);
-            TypeInfo type = getParameter(param).getType();
-            if (type.getValueType() == Value.UNKNOWN) {
-                type = TypeInfo.TYPE_VARCHAR;
+            ParameterInterface p = getParameter(param);
+            int type = p.getValueType();
+            if (type == Value.UNKNOWN) {
+                type = Value.STRING;
             }
-            return DataType.convertTypeToSQLType(type);
+            return DataType.getDataType(type).sqlType;
         } catch (Exception e) {
             throw logAndConvert(e);
         }
@@ -102,8 +102,8 @@ public final class JdbcParameterMetaData extends TraceObject implements Paramete
     public int getPrecision(int param) throws SQLException {
         try {
             debugCodeCall("getPrecision", param);
-            TypeInfo type = getParameter(param).getType();
-            return type.getValueType() == Value.UNKNOWN ? 0 : MathUtils.convertLongToInt(type.getPrecision());
+            ParameterInterface p = getParameter(param);
+            return MathUtils.convertLongToInt(p.getPrecision());
         } catch (Exception e) {
             throw logAndConvert(e);
         }
@@ -120,8 +120,8 @@ public final class JdbcParameterMetaData extends TraceObject implements Paramete
     public int getScale(int param) throws SQLException {
         try {
             debugCodeCall("getScale", param);
-            TypeInfo type = getParameter(param).getType();
-            return type.getValueType() == Value.UNKNOWN ? 0 : type.getScale();
+            ParameterInterface p = getParameter(param);
+            return p.getScale();
         } catch (Exception e) {
             throw logAndConvert(e);
         }
@@ -173,11 +173,12 @@ public final class JdbcParameterMetaData extends TraceObject implements Paramete
     public String getParameterClassName(int param) throws SQLException {
         try {
             debugCodeCall("getParameterClassName", param);
-            int type = getParameter(param).getType().getValueType();
+            ParameterInterface p = getParameter(param);
+            int type = p.getValueType();
             if (type == Value.UNKNOWN) {
-                type = Value.VARCHAR;
+                type = Value.STRING;
             }
-            return ValueToObjectConverter.getDefaultClass(type, true).getName();
+            return DataType.getTypeClassName(type, false);
         } catch (Exception e) {
             throw logAndConvert(e);
         }
@@ -194,11 +195,12 @@ public final class JdbcParameterMetaData extends TraceObject implements Paramete
     public String getParameterTypeName(int param) throws SQLException {
         try {
             debugCodeCall("getParameterTypeName", param);
-            TypeInfo type = getParameter(param).getType();
-            if (type.getValueType() == Value.UNKNOWN) {
-                type = TypeInfo.TYPE_VARCHAR;
+            ParameterInterface p = getParameter(param);
+            int type = p.getValueType();
+            if (type == Value.UNKNOWN) {
+                type = Value.STRING;
             }
-            return type.getDeclaredTypeName();
+            return DataType.getDataType(type).name;
         } catch (Exception e) {
             throw logAndConvert(e);
         }

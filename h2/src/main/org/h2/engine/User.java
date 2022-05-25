@@ -1,6 +1,6 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  */
 package org.h2.engine;
@@ -13,11 +13,11 @@ import org.h2.message.DbException;
 import org.h2.message.Trace;
 import org.h2.schema.Schema;
 import org.h2.security.SHA256;
-import org.h2.table.DualTable;
 import org.h2.table.MetaTable;
 import org.h2.table.RangeTable;
 import org.h2.table.Table;
 import org.h2.table.TableType;
+import org.h2.table.TableView;
 import org.h2.util.MathUtils;
 import org.h2.util.StringUtils;
 import org.h2.util.Utils;
@@ -25,7 +25,7 @@ import org.h2.util.Utils;
 /**
  * Represents a user object.
  */
-public final class User extends RightOwner {
+public class User extends RightOwner {
 
     private final boolean systemUser;
     private byte[] salt;
@@ -76,12 +76,76 @@ public final class User extends RightOwner {
 
     @Override
     public String getCreateSQLForCopy(Table table, String quotedName) {
-        throw DbException.getInternalError(toString());
+        throw DbException.throwInternalError(toString());
     }
 
     @Override
     public String getCreateSQL() {
         return getCreateSQL(true);
+    }
+
+    @Override
+    public String getDropSQL() {
+        return null;
+    }
+
+    /**
+     * Checks that this user has the given rights for this database object.
+     *
+     * @param table the database object
+     * @param rightMask the rights required
+     * @throws DbException if this user does not have the required rights
+     */
+    public void checkRight(Table table, int rightMask) {
+        if (!hasRight(table, rightMask)) {
+            throw DbException.get(ErrorCode.NOT_ENOUGH_RIGHTS_FOR_1, table.getSQL(false));
+        }
+    }
+
+    /**
+     * See if this user has the given rights for this database object.
+     *
+     * @param table the database object, or null for schema-only check
+     * @param rightMask the rights required
+     * @return true if the user has the rights
+     */
+    public boolean hasRight(Table table, int rightMask) {
+        if (rightMask != Right.SELECT && !systemUser && table != null) {
+            table.checkWritingAllowed();
+        }
+        if (admin) {
+            return true;
+        }
+        Role publicRole = database.getPublicRole();
+        if (publicRole.isRightGrantedRecursive(table, rightMask)) {
+            return true;
+        }
+        if (table instanceof MetaTable || table instanceof RangeTable) {
+            // everybody has access to the metadata information
+            return true;
+        }
+        if (table != null) {
+            if (hasRight(null, Right.ALTER_ANY_SCHEMA)) {
+                return true;
+            }
+            TableType tableType = table.getTableType();
+            if (TableType.VIEW == tableType) {
+                TableView v = (TableView) table;
+                if (v.getOwner() == this) {
+                    // the owner of a view has access:
+                    // SELECT * FROM (SELECT * FROM ...)
+                    return true;
+                }
+            } else if (tableType == null) {
+                // function table
+                return true;
+            }
+            if (table.isTemporary() && !table.isGlobalTemporary()) {
+                // the owner has all rights on local temporary tables
+                return true;
+            }
+        }
+        return isRightGrantedRecursive(table, rightMask);
     }
 
     /**
@@ -93,7 +157,7 @@ public final class User extends RightOwner {
      */
     public String getCreateSQL(boolean password) {
         StringBuilder buff = new StringBuilder("CREATE USER IF NOT EXISTS ");
-        getSQL(buff, DEFAULT_SQL_FLAGS);
+        getSQL(buff, true);
         if (comment != null) {
             buff.append(" COMMENT ");
             StringUtils.quoteStringSQL(buff, comment);
@@ -131,8 +195,8 @@ public final class User extends RightOwner {
     }
 
     /**
-     * Checks if this user has admin rights. An exception is thrown if user
-     * doesn't have them.
+     * Check if this user has admin rights. An exception is thrown if he does
+     * not have them.
      *
      * @throws DbException if this user is not an admin
      */
@@ -143,92 +207,15 @@ public final class User extends RightOwner {
     }
 
     /**
-     * Checks if this user has schema admin rights for every schema. An
-     * exception is thrown if user doesn't have them.
+     * Check if this user has schema admin rights. An exception is thrown if he
+     * does not have them.
      *
      * @throws DbException if this user is not a schema admin
      */
     public void checkSchemaAdmin() {
-        if (!hasSchemaRight(null)) {
+        if (!hasRight(null, Right.ALTER_ANY_SCHEMA)) {
             throw DbException.get(ErrorCode.ADMIN_RIGHTS_REQUIRED);
         }
-    }
-
-    /**
-     * Checks if this user has schema owner rights for the specified schema. An
-     * exception is thrown if user doesn't have them.
-     *
-     * @param schema the schema
-     * @throws DbException if this user is not a schema owner
-     */
-    public void checkSchemaOwner(Schema schema) {
-        if (!hasSchemaRight(schema)) {
-            throw DbException.get(ErrorCode.NOT_ENOUGH_RIGHTS_FOR_1, schema.getTraceSQL());
-        }
-    }
-
-    /**
-     * See if this user has owner rights for the specified schema
-     *
-     * @param schema the schema
-     * @return true if the user has the rights
-     */
-    private boolean hasSchemaRight(Schema schema) {
-        if (admin) {
-            return true;
-        }
-        Role publicRole = database.getPublicRole();
-        if (publicRole.isSchemaRightGrantedRecursive(schema)) {
-            return true;
-        }
-        return isSchemaRightGrantedRecursive(schema);
-    }
-
-    /**
-     * Checks that this user has the given rights for the specified table.
-     *
-     * @param table the table
-     * @param rightMask the rights required
-     * @throws DbException if this user does not have the required rights
-     */
-    public void checkTableRight(Table table, int rightMask) {
-        if (!hasTableRight(table, rightMask)) {
-            throw DbException.get(ErrorCode.NOT_ENOUGH_RIGHTS_FOR_1, table.getTraceSQL());
-        }
-    }
-
-    /**
-     * See if this user has the given rights for this database object.
-     *
-     * @param table the database object, or null for schema-only check
-     * @param rightMask the rights required
-     * @return true if the user has the rights
-     */
-    public boolean hasTableRight(Table table, int rightMask) {
-        if (rightMask != Right.SELECT && !systemUser) {
-            table.checkWritingAllowed();
-        }
-        if (admin) {
-            return true;
-        }
-        Role publicRole = database.getPublicRole();
-        if (publicRole.isTableRightGrantedRecursive(table, rightMask)) {
-            return true;
-        }
-        if (table instanceof MetaTable || table instanceof DualTable || table instanceof RangeTable) {
-            // everybody has access to the metadata information
-            return true;
-        }
-        TableType tableType = table.getTableType();
-        if (tableType == null) {
-            // derived or function table
-            return true;
-        }
-        if (table.isTemporary() && !table.isGlobalTemporary()) {
-            // the owner has all rights on local temporary tables
-            return true;
-        }
-        return isTableRightGrantedRecursive(table, rightMask);
     }
 
     @Override
@@ -253,7 +240,7 @@ public final class User extends RightOwner {
     }
 
     @Override
-    public void removeChildrenAndResources(SessionLocal session) {
+    public void removeChildrenAndResources(Session session) {
         for (Right right : database.getAllRights()) {
             if (right.getGrantee() == this) {
                 database.removeDatabaseObject(session, right);
@@ -264,6 +251,25 @@ public final class User extends RightOwner {
         Arrays.fill(passwordHash, (byte) 0);
         passwordHash = null;
         invalidate();
+    }
+
+    @Override
+    public void checkRename() {
+        // ok
+    }
+
+    /**
+     * Check that this user does not own any schema. An exception is thrown if
+     * he owns one or more schemas.
+     *
+     * @throws DbException if this user owns a schema
+     */
+    public void checkOwnsNoSchemas() {
+        for (Schema s : database.getAllSchemas()) {
+            if (this == s.getOwner()) {
+                throw DbException.get(ErrorCode.CANNOT_DROP_2, getName(), s.getName());
+            }
+        }
     }
 
 }

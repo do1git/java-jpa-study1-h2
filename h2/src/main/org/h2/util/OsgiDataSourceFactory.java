@@ -1,13 +1,12 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  */
 package org.h2.util;
 
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
-import java.util.Hashtable;
 import java.util.Properties;
 import javax.sql.ConnectionPoolDataSource;
 import javax.sql.DataSource;
@@ -289,7 +288,7 @@ public class OsgiDataSourceFactory implements DataSourceFactory {
      */
     static void registerService(BundleContext bundleContext,
             org.h2.Driver driver) {
-        Hashtable<String, String> properties = new Hashtable<>();
+        Properties properties = new Properties();
         properties.put(
                 DataSourceFactory.OSGI_JDBC_DRIVER_CLASS,
                 org.h2.Driver.class.getName());
@@ -298,7 +297,7 @@ public class OsgiDataSourceFactory implements DataSourceFactory {
                 "H2 JDBC Driver");
         properties.put(
                 DataSourceFactory.OSGI_JDBC_DRIVER_VERSION,
-                Constants.FULL_VERSION);
+                Constants.getFullVersion());
         bundleContext.registerService(
                 DataSourceFactory.class.getName(),
                 new OsgiDataSourceFactory(driver), properties);

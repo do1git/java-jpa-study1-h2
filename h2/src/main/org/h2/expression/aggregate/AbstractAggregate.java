@@ -1,6 +1,6 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  */
 package org.h2.expression.aggregate;
@@ -9,9 +9,10 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 
-import org.h2.command.query.Select;
-import org.h2.command.query.SelectGroups;
-import org.h2.engine.SessionLocal;
+import org.h2.command.dml.Select;
+import org.h2.command.dml.SelectGroups;
+import org.h2.command.dml.SelectOrderBy;
+import org.h2.engine.Session;
 import org.h2.expression.Expression;
 import org.h2.expression.analysis.DataAnalysisOperation;
 import org.h2.expression.analysis.WindowFrame;
@@ -87,12 +88,12 @@ public abstract class AbstractAggregate extends DataAnalysisOperation {
     }
 
     @Override
-    public Expression optimize(SessionLocal session) {
+    public Expression optimize(Session session) {
         for (int i = 0; i < args.length; i++) {
             args[i] = args[i].optimize(session);
         }
         if (filterCondition != null) {
-            filterCondition = filterCondition.optimizeCondition(session);
+            filterCondition = filterCondition.optimize(session);
         }
         return super.optimize(session);
     }
@@ -109,8 +110,8 @@ public abstract class AbstractAggregate extends DataAnalysisOperation {
     }
 
     @Override
-    protected void getOrderedResultLoop(SessionLocal session, HashMap<Integer, Value> result,
-            ArrayList<Value[]> ordered, int rowIdColumn) {
+    protected void getOrderedResultLoop(Session session, HashMap<Integer, Value> result, ArrayList<Value[]> ordered,
+            int rowIdColumn) {
         WindowFrame frame = over.getWindowFrame();
         /*
          * With RANGE (default) or GROUPS units and EXCLUDE GROUP or EXCLUDE NO
@@ -155,7 +156,7 @@ public abstract class AbstractAggregate extends DataAnalysisOperation {
                 updateFromExpressions(session, aggregateData, iter.next());
             }
             Value r = getAggregatedValue(session, aggregateData);
-            i = processGroup(result, r, ordered, rowIdColumn, i, size, grouped);
+            i = processGroup(session, result, r, ordered, rowIdColumn, i, size, aggregateData, grouped);
         }
     }
 
@@ -184,8 +185,8 @@ public abstract class AbstractAggregate extends DataAnalysisOperation {
         return false;
     }
 
-    private void aggregateFastPartition(SessionLocal session, HashMap<Integer, Value> result,
-            ArrayList<Value[]> ordered, int rowIdColumn, boolean grouped) {
+    private void aggregateFastPartition(Session session, HashMap<Integer, Value> result, ArrayList<Value[]> ordered,
+            int rowIdColumn, boolean grouped) {
         Object aggregateData = createAggregateData();
         int size = ordered.size();
         int lastIncludedRow = -1;
@@ -202,11 +203,11 @@ public abstract class AbstractAggregate extends DataAnalysisOperation {
             } else if (r == null) {
                 r = getAggregatedValue(session, aggregateData);
             }
-            i = processGroup(result, r, ordered, rowIdColumn, i, size, grouped);
+            i = processGroup(session, result, r, ordered, rowIdColumn, i, size, aggregateData, grouped);
         }
     }
 
-    private void aggregateFastPartitionInReverse(SessionLocal session, HashMap<Integer, Value> result,
+    private void aggregateFastPartitionInReverse(Session session, HashMap<Integer, Value> result,
             ArrayList<Value[]> ordered, int rowIdColumn, boolean grouped) {
         Object aggregateData = createAggregateData();
         int firstIncludedRow = ordered.size();
@@ -231,8 +232,8 @@ public abstract class AbstractAggregate extends DataAnalysisOperation {
         }
     }
 
-    private int processGroup(HashMap<Integer, Value> result, Value r, ArrayList<Value[]> ordered,
-            int rowIdColumn, int i, int size, boolean grouped) {
+    private int processGroup(Session session, HashMap<Integer, Value> result, Value r, ArrayList<Value[]> ordered,
+            int rowIdColumn, int i, int size, Object aggregateData, boolean grouped) {
         Value[] firstRowInGroup = ordered.get(i), currentRowInGroup = firstRowInGroup;
         do {
             result.put(currentRowInGroup[rowIdColumn].getInt(), r);
@@ -241,8 +242,8 @@ public abstract class AbstractAggregate extends DataAnalysisOperation {
         return i;
     }
 
-    private void aggregateWholePartition(SessionLocal session, HashMap<Integer, Value> result,
-            ArrayList<Value[]> ordered, int rowIdColumn) {
+    private void aggregateWholePartition(Session session, HashMap<Integer, Value> result, ArrayList<Value[]> ordered,
+            int rowIdColumn) {
         // Aggregate values from the whole partition
         Object aggregateData = createAggregateData();
         for (Value[] row : ordered) {
@@ -265,22 +266,23 @@ public abstract class AbstractAggregate extends DataAnalysisOperation {
      * @param array
      *            values of expressions
      */
-    protected abstract void updateFromExpressions(SessionLocal session, Object aggregateData, Value[] array);
+    protected abstract void updateFromExpressions(Session session, Object aggregateData, Value[] array);
 
     @Override
-    protected void updateAggregate(SessionLocal session, SelectGroups groupData, int groupRowId) {
+    protected void updateAggregate(Session session, SelectGroups groupData, int groupRowId) {
+        ArrayList<SelectOrderBy> orderBy;
         if (filterCondition == null || filterCondition.getBooleanValue(session)) {
             if (over != null) {
-                if (over.isOrdered()) {
-                    updateOrderedAggregate(session, groupData, groupRowId, over.getOrderBy());
+                if ((orderBy = over.getOrderBy()) != null) {
+                    updateOrderedAggregate(session, groupData, groupRowId, orderBy);
                 } else {
                     updateAggregate(session, getWindowData(session, groupData, false));
                 }
             } else {
                 updateAggregate(session, getGroupData(groupData, false));
             }
-        } else if (over != null && over.isOrdered()) {
-            updateOrderedAggregate(session, groupData, groupRowId, over.getOrderBy());
+        } else if (over != null && (orderBy = over.getOrderBy()) != null) {
+            updateOrderedAggregate(session, groupData, groupRowId, orderBy);
         }
     }
 
@@ -292,10 +294,10 @@ public abstract class AbstractAggregate extends DataAnalysisOperation {
      * @param aggregateData
      *            aggregate data
      */
-    protected abstract void updateAggregate(SessionLocal session, Object aggregateData);
+    protected abstract void updateAggregate(Session session, Object aggregateData);
 
     @Override
-    protected void updateGroupAggregates(SessionLocal session, int stage) {
+    protected void updateGroupAggregates(Session session, int stage) {
         if (filterCondition != null) {
             filterCondition.updateAggregate(session, stage);
         }
@@ -303,22 +305,12 @@ public abstract class AbstractAggregate extends DataAnalysisOperation {
     }
 
     @Override
-    protected StringBuilder appendTailConditions(StringBuilder builder, int sqlFlags, boolean forceOrderBy) {
+    protected StringBuilder appendTailConditions(StringBuilder builder, boolean alwaysQuote) {
         if (filterCondition != null) {
             builder.append(" FILTER (WHERE ");
-            filterCondition.getUnenclosedSQL(builder, sqlFlags).append(')');
+            filterCondition.getSQL(builder, alwaysQuote).append(')');
         }
-        return super.appendTailConditions(builder, sqlFlags, forceOrderBy);
-    }
-
-    @Override
-    public int getSubexpressionCount() {
-        return args.length;
-    }
-
-    @Override
-    public Expression getSubexpression(int index) {
-        return args[index];
+        return super.appendTailConditions(builder, alwaysQuote);
     }
 
 }

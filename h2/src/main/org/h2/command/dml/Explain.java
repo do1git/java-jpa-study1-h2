@@ -1,28 +1,26 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  */
 package org.h2.command.dml;
 
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.TreeMap;
+import java.util.Map.Entry;
 import org.h2.command.CommandInterface;
 import org.h2.command.Prepared;
 import org.h2.engine.Database;
-import org.h2.engine.DbObject;
-import org.h2.engine.SessionLocal;
+import org.h2.engine.Session;
 import org.h2.expression.Expression;
 import org.h2.expression.ExpressionColumn;
-import org.h2.mvstore.db.Store;
+import org.h2.mvstore.db.MVTableEngine.Store;
 import org.h2.result.LocalResult;
 import org.h2.result.ResultInterface;
+import org.h2.store.PageStore;
 import org.h2.table.Column;
-import org.h2.util.HasSQL;
-import org.h2.value.TypeInfo;
-import org.h2.value.ValueVarchar;
+import org.h2.value.Value;
+import org.h2.value.ValueString;
 
 /**
  * This class represents the statement
@@ -34,7 +32,7 @@ public class Explain extends Prepared {
     private LocalResult result;
     private boolean executeCommand;
 
-    public Explain(SessionLocal session) {
+    public Explain(Session session) {
         super(session);
     }
 
@@ -69,28 +67,39 @@ public class Explain extends Prepared {
     }
 
     @Override
-    public ResultInterface query(long maxrows) {
+    public ResultInterface query(int maxrows) {
+        Column column = new Column("PLAN", Value.STRING);
         Database db = session.getDatabase();
-        Expression[] expressions = { new ExpressionColumn(db, new Column("PLAN", TypeInfo.TYPE_VARCHAR)) };
-        result = new LocalResult(session, expressions, 1, 1);
-        int sqlFlags = HasSQL.ADD_PLAN_INFORMATION;
+        ExpressionColumn expr = new ExpressionColumn(db, column);
+        Expression[] expressions = { expr };
+        result = db.getResultFactory().create(session, expressions, 1);
+        boolean alwaysQuote = true;
         if (maxrows >= 0) {
             String plan;
             if (executeCommand) {
-                Store store = null;
+                PageStore store = null;
+                Store mvStore = null;
                 if (db.isPersistent()) {
-                    store = db.getStore();
-                    store.statisticsStart();
+                    store = db.getPageStore();
+                    if (store != null) {
+                        store.statisticsStart();
+                    }
+                    mvStore = db.getStore();
+                    if (mvStore != null) {
+                        mvStore.statisticsStart();
+                    }
                 }
                 if (command.isQuery()) {
                     command.query(maxrows);
                 } else {
                     command.update();
                 }
-                plan = command.getPlanSQL(sqlFlags);
+                plan = command.getPlanSQL(alwaysQuote);
                 Map<String, Integer> statistics = null;
                 if (store != null) {
                     statistics = store.statisticsEnd();
+                } else if (mvStore != null) {
+                    statistics = mvStore.statisticsEnd();
                 }
                 if (statistics != null) {
                     int total = 0;
@@ -116,7 +125,7 @@ public class Explain extends Prepared {
                     }
                 }
             } else {
-                plan = command.getPlanSQL(sqlFlags);
+                plan = command.getPlanSQL(alwaysQuote);
             }
             add(plan);
         }
@@ -125,7 +134,8 @@ public class Explain extends Prepared {
     }
 
     private void add(String text) {
-        result.addRow(ValueVarchar.get(text));
+        Value[] row = { ValueString.get(text) };
+        result.addRow(row);
     }
 
     @Override
@@ -147,10 +157,4 @@ public class Explain extends Prepared {
     public int getType() {
         return executeCommand ? CommandInterface.EXPLAIN_ANALYZE : CommandInterface.EXPLAIN;
     }
-
-    @Override
-    public void collectDependencies(HashSet<DbObject> dependencies) {
-        command.collectDependencies(dependencies);
-    }
-
 }

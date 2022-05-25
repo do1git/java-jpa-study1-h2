@@ -1,6 +1,6 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  */
 package org.h2.util;
@@ -41,7 +41,6 @@ public abstract class Tool {
      * Run the tool with the given output stream and arguments.
      *
      * @param args the argument list
-     * @throws SQLException on failure
      */
     public abstract void runTool(String... args) throws SQLException;
 
@@ -50,7 +49,6 @@ public abstract class Tool {
      *
      * @param option the unsupported option
      * @return this method never returns normally
-     * @throws SQLException on failure
      */
     protected SQLException showUsageAndThrowUnsupportedOption(String option)
             throws SQLException {
@@ -63,7 +61,6 @@ public abstract class Tool {
      *
      * @param option the unsupported option
      * @return this method never returns normally
-     * @throws SQLException on failure
      */
     protected SQLException throwUnsupportedOption(String option)
             throws SQLException {
@@ -114,7 +111,7 @@ public abstract class Tool {
         out.println(resources.get(className));
         out.println("Usage: java "+getClass().getName() + " <options>");
         out.println(resources.get(className + ".main"));
-        out.println("See also https://h2database.com/javadoc/" +
+        out.println("See also http://h2database.com/javadoc/" +
                 className.replace('.', '/') + ".html");
     }
 

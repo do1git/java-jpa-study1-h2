@@ -1,28 +1,22 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  */
 package org.h2.mvstore.tx;
 
-import java.util.BitSet;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicLong;
-import org.h2.engine.IsolationLevel;
 import org.h2.mvstore.DataUtils;
 import org.h2.mvstore.MVMap;
 import org.h2.mvstore.MVStore;
-import org.h2.mvstore.RootReference;
 import org.h2.mvstore.type.DataType;
 import org.h2.value.VersionedValue;
+import java.util.Iterator;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * A transaction.
  */
-public final class Transaction {
+public class Transaction {
 
     /**
      * The status of a closed transaction (committed or rolled back).
@@ -132,7 +126,7 @@ public final class Transaction {
     /**
      * How long to wait for blocking transaction to commit or rollback.
      */
-    int timeoutMillis;
+    final int timeoutMillis;
 
     /**
      * Identification of the owner of this transaction,
@@ -148,7 +142,7 @@ public final class Transaction {
     /**
      * Map on which this transaction is blocked.
      */
-    private String blockingMapName;
+    private MVMap<?,VersionedValue> blockingMap;
 
     /**
      * Key in blockingMap on which this transaction is blocked.
@@ -160,33 +154,17 @@ public final class Transaction {
      */
     private volatile boolean notificationRequested;
 
-    /**
-     * RootReferences for undo log snapshots
-     */
-    private RootReference<Long,Record<?,?>>[] undoLogRootReferences;
-
-    /**
-     * Map of transactional maps for this transaction
-     */
-    private final Map<Integer, TransactionMap<?,?>> transactionMaps = new HashMap<>();
-
-    /**
-     * The current isolation level.
-     */
-    final IsolationLevel isolationLevel;
-
 
     Transaction(TransactionStore store, int transactionId, long sequenceNum, int status,
                 String name, long logId, int timeoutMillis, int ownerId,
-                IsolationLevel isolationLevel, TransactionStore.RollbackListener listener) {
+                TransactionStore.RollbackListener listener) {
         this.store = store;
         this.transactionId = transactionId;
         this.sequenceNum = sequenceNum;
         this.statusAndLogId = new AtomicLong(composeState(status, logId, false));
         this.name = name;
-        setTimeoutMillis(timeoutMillis);
+        this.timeoutMillis = timeoutMillis;
         this.ownerId = ownerId;
-        this.isolationLevel = isolationLevel;
         this.listener = listener;
     }
 
@@ -200,10 +178,6 @@ public final class Transaction {
 
     public int getStatus() {
         return getStatus(statusAndLogId.get());
-    }
-
-    RootReference<Long,Record<?,?>>[] getUndoLogRootReferences() {
-        return undoLogRootReferences;
     }
 
     /**
@@ -233,8 +207,7 @@ public final class Transaction {
                     break;
                 case STATUS_ROLLED_BACK:
                     valid = currentStatus == STATUS_OPEN ||
-                            currentStatus == STATUS_PREPARED ||
-                            currentStatus == STATUS_ROLLING_BACK;
+                            currentStatus == STATUS_PREPARED;
                     break;
                 case STATUS_CLOSED:
                     valid = currentStatus == STATUS_COMMITTED ||
@@ -246,10 +219,10 @@ public final class Transaction {
                     break;
             }
             if (!valid) {
-                throw DataUtils.newMVStoreException(
+                throw DataUtils.newIllegalStateException(
                         DataUtils.ERROR_TRANSACTION_ILLEGAL_STATE,
                         "Transaction was illegally transitioned from {0} to {1}",
-                        getStatusName(currentStatus), getStatusName(status));
+                        STATUS_NAMES[currentStatus], STATUS_NAMES[status]);
             }
             long newState = composeState(status, logId, hasRollback(currentState));
             if (statusAndLogId.compareAndSet(currentState, newState)) {
@@ -292,98 +265,19 @@ public final class Transaction {
     }
 
     /**
-     * Returns whether statement dependencies are currently set.
-     *
-     * @return whether statement dependencies are currently set
-     */
-    public boolean hasStatementDependencies() {
-        return !transactionMaps.isEmpty();
-    }
-
-    /**
-     * Returns the isolation level of this transaction.
-     *
-     * @return the isolation level of this transaction
-     */
-    public IsolationLevel getIsolationLevel() {
-        return isolationLevel;
-    }
-
-    boolean isReadCommitted() {
-        return isolationLevel == IsolationLevel.READ_COMMITTED;
-    }
-
-    /**
-     * Whether this transaction has isolation level READ_COMMITTED or below.
-     * @return true if isolation level is READ_COMMITTED or READ_UNCOMMITTED
-     */
-    public boolean allowNonRepeatableRead() {
-        return isolationLevel.allowNonRepeatableRead();
-    }
-
-    /**
      * Mark an entry into a new SQL statement execution within this transaction.
-     *
-     * @param maps
-     *            set of maps used by transaction or statement is about to be executed
      */
-    @SuppressWarnings({"unchecked","rawtypes"})
-    public void markStatementStart(HashSet<MVMap<Object,VersionedValue<Object>>> maps) {
+    public void markStatementStart() {
         markStatementEnd();
-        if (txCounter == null && store.store.isVersioningRequired()) {
-            txCounter = store.store.registerVersionUsage();
-        }
-
-        if (maps != null && !maps.isEmpty()) {
-            // The purpose of the following loop is to get a coherent picture
-            // In order to get such a "snapshot", we wait for a moment of silence,
-            // when no new transaction were committed / closed.
-            BitSet committingTransactions;
-            do {
-                committingTransactions = store.committingTransactions.get();
-                for (MVMap<Object,VersionedValue<Object>> map : maps) {
-                    TransactionMap<?,?> txMap = openMapX(map);
-                    txMap.setStatementSnapshot(new Snapshot(map.flushAndGetRoot(), committingTransactions));
-                }
-                if (isReadCommitted()) {
-                    undoLogRootReferences = store.collectUndoLogRootReferences();
-                }
-            } while (committingTransactions != store.committingTransactions.get());
-            // Now we have a snapshot, where each map RootReference point to state of the map,
-            // undoLogRootReferences captures the state of undo logs
-            // and committingTransactions mask tells us which of seemingly uncommitted changes
-            // should be considered as committed.
-            // Subsequent processing uses this snapshot info only.
-            for (MVMap<Object,VersionedValue<Object>> map : maps) {
-                TransactionMap<?,?> txMap = openMapX(map);
-                txMap.promoteSnapshot();
-            }
-        }
+        txCounter = store.store.registerVersionUsage();
     }
 
     /**
      * Mark an exit from SQL statement execution within this transaction.
      */
     public void markStatementEnd() {
-        if (allowNonRepeatableRead()) {
-            releaseSnapshot();
-        }
-        for (TransactionMap<?, ?> transactionMap : transactionMaps.values()) {
-            transactionMap.setStatementSnapshot(null);
-        }
-    }
-
-    private void markTransactionEnd() {
-        if (!allowNonRepeatableRead()) {
-            releaseSnapshot();
-        }
-    }
-
-    private void releaseSnapshot() {
-        transactionMaps.clear();
-        undoLogRootReferences = null;
         MVStore.TxCounter counter = txCounter;
-        if (counter != null) {
+        if(counter != null) {
             txCounter = null;
             store.store.deregisterVersionUsage(counter);
         }
@@ -392,22 +286,24 @@ public final class Transaction {
     /**
      * Add a log entry.
      *
-     * @param logRecord to append
+     * @param mapId the map id
+     * @param key the key
+     * @param oldValue the old value
      *
      * @return key for the newly added undo log entry
      */
-    long log(Record<?,?> logRecord) {
+    long log(int mapId, Object key, VersionedValue oldValue) {
         long currentState = statusAndLogId.getAndIncrement();
         long logId = getLogId(currentState);
         if (logId >= LOG_ID_LIMIT) {
-            throw DataUtils.newMVStoreException(
+            throw DataUtils.newIllegalStateException(
                     DataUtils.ERROR_TRANSACTION_TOO_BIG,
                     "Transaction {0} has too many changes",
                     transactionId);
         }
         int currentStatus = getStatus(currentState);
         checkOpen(currentStatus);
-        long undoKey = store.addUndoLogRecord(transactionId, logId, logRecord);
+        long undoKey = store.addUndoLogRecord(transactionId, logId, new Object[]{ mapId, key, oldValue });
         return undoKey;
     }
 
@@ -418,7 +314,7 @@ public final class Transaction {
         long currentState = statusAndLogId.decrementAndGet();
         long logId = getLogId(currentState);
         if (logId >= LOG_ID_LIMIT) {
-            throw DataUtils.newMVStoreException(
+            throw DataUtils.newIllegalStateException(
                     DataUtils.ERROR_TRANSACTION_CORRUPT,
                     "Transaction {0} has internal error",
                     transactionId);
@@ -451,10 +347,9 @@ public final class Transaction {
      * @return the transaction map
      */
     public <K, V> TransactionMap<K, V> openMap(String name,
-                                                DataType<K> keyType,
-                                                DataType<V> valueType) {
-        MVMap<K, VersionedValue<V>> map = store.openVersionedMap(name, keyType, valueType);
-        return openMapX(map);
+                                                DataType keyType, DataType valueType) {
+        MVMap<K, VersionedValue> map = store.openMap(name, keyType, valueType);
+        return openMap(map);
     }
 
     /**
@@ -465,16 +360,9 @@ public final class Transaction {
      * @param map the base map
      * @return the transactional map
      */
-    @SuppressWarnings("unchecked")
-    public <K, V> TransactionMap<K,V> openMapX(MVMap<K,VersionedValue<V>> map) {
+    public <K, V> TransactionMap<K, V> openMap(MVMap<K, VersionedValue> map) {
         checkNotClosed();
-        int id = map.getId();
-        TransactionMap<K,V> transactionMap = (TransactionMap<K,V>)transactionMaps.get(id);
-        if (transactionMap == null) {
-            transactionMap = new TransactionMap<>(this, map);
-            transactionMaps.put(id, transactionMap);
-        }
-        return transactionMap;
+        return new TransactionMap<>(this, map);
     }
 
     /**
@@ -491,14 +379,12 @@ public final class Transaction {
      */
     public void commit() {
         assert store.openTransactions.get().get(transactionId);
-        markTransactionEnd();
         Throwable ex = null;
         boolean hasChanges = false;
-        int previousStatus = STATUS_OPEN;
         try {
             long state = setStatus(STATUS_COMMITTED);
             hasChanges = hasChanges(state);
-            previousStatus = getStatus(state);
+            int previousStatus = getStatus(state);
             if (hasChanges) {
                 store.commit(this, previousStatus == STATUS_COMMITTED);
             }
@@ -506,15 +392,13 @@ public final class Transaction {
             ex = e;
             throw e;
         } finally {
-            if (isActive(previousStatus)) {
-                try {
-                    store.endTransaction(this, hasChanges);
-                } catch (Throwable e) {
-                    if (ex == null) {
-                        throw e;
-                    } else {
-                        ex.addSuppressed(e);
-                    }
+            try {
+                store.endTransaction(this, hasChanges);
+            } catch (Throwable e) {
+                if (ex == null) {
+                    throw e;
+                } else {
+                    ex.addSuppressed(e);
                 }
             }
         }
@@ -533,7 +417,9 @@ public final class Transaction {
         try {
             store.rollbackTo(this, logId, savepointId);
         } finally {
-            notifyAllWaitingTransactions();
+            if (notificationRequested) {
+                notifyAllWaitingTransactions();
+            }
             long expectedState = composeState(STATUS_ROLLING_BACK, logId, hasRollback(lastState));
             long newState = composeState(STATUS_OPEN, savepointId, true);
             do {
@@ -542,7 +428,7 @@ public final class Transaction {
         }
         // this is moved outside of finally block to avert masking original exception, if any
         if (!success) {
-            throw DataUtils.newMVStoreException(
+            throw DataUtils.newIllegalStateException(
                     DataUtils.ERROR_TRANSACTION_ILLEGAL_STATE,
                     "Transaction {0} concurrently modified while rollback to savepoint was in progress",
                     transactionId);
@@ -553,27 +439,19 @@ public final class Transaction {
      * Roll the transaction back. Afterwards, this transaction is closed.
      */
     public void rollback() {
-        markTransactionEnd();
         Throwable ex = null;
-        int status = STATUS_OPEN;
         try {
             long lastState = setStatus(STATUS_ROLLED_BACK);
-            status = getStatus(lastState);
             long logId = getLogId(lastState);
             if (logId > 0) {
                 store.rollbackTo(this, logId, 0);
             }
         } catch (Throwable e) {
-            status = getStatus();
-            if (isActive(status)) {
-                ex = e;
-                throw e;
-            }
+            ex = e;
+            throw e;
         } finally {
             try {
-                if (isActive(status)) {
-                    store.endTransaction(this, true);
-                }
+                store.endTransaction(this, true);
             } catch (Throwable e) {
                 if (ex == null) {
                     throw e;
@@ -582,12 +460,6 @@ public final class Transaction {
                 }
             }
         }
-    }
-
-    private static boolean isActive(int status) {
-        return status != STATUS_CLOSED
-            && status != STATUS_COMMITTED
-            && status != STATUS_ROLLED_BACK;
     }
 
     /**
@@ -603,15 +475,6 @@ public final class Transaction {
         return store.getChanges(this, getLogId(), savepointId);
     }
 
-    /**
-     * Sets the new lock timeout.
-     *
-     * @param timeoutMillis the new lock timeout in milliseconds
-     */
-    public void setTimeoutMillis(int timeoutMillis) {
-        this.timeoutMillis = timeoutMillis > 0 ? timeoutMillis : store.timeoutMillis;
-    }
-
     private long getLogId() {
         return getLogId(statusAndLogId.get());
     }
@@ -621,9 +484,9 @@ public final class Transaction {
      */
     private void checkOpen(int status) {
         if (status != STATUS_OPEN) {
-            throw DataUtils.newMVStoreException(
+            throw DataUtils.newIllegalStateException(
                     DataUtils.ERROR_TRANSACTION_ILLEGAL_STATE,
-                    "Transaction {0} has status {1}, not OPEN", transactionId, getStatusName(status));
+                    "Transaction {0} has status {1}, not OPEN", transactionId, STATUS_NAMES[status]);
         }
     }
 
@@ -632,7 +495,7 @@ public final class Transaction {
      */
     private void checkNotClosed() {
         if (getStatus() == STATUS_CLOSED) {
-            throw DataUtils.newMVStoreException(
+            throw DataUtils.newIllegalStateException(
                     DataUtils.ERROR_CLOSED, "Transaction {0} is closed", transactionId);
         }
     }
@@ -641,20 +504,15 @@ public final class Transaction {
      * Transition this transaction into a closed state.
      */
     void closeIt() {
-        transactionMaps.clear();
         long lastState = setStatus(STATUS_CLOSED);
         store.store.deregisterVersionUsage(txCounter);
-        if((hasChanges(lastState) || hasRollback(lastState))) {
+        if((hasChanges(lastState) || hasRollback(lastState)) && notificationRequested) {
             notifyAllWaitingTransactions();
         }
     }
 
-    private void notifyAllWaitingTransactions() {
-        if (notificationRequested) {
-            synchronized (this) {
-                notifyAll();
-            }
-        }
+    private synchronized void notifyAllWaitingTransactions() {
+        notifyAll();
     }
 
     /**
@@ -662,81 +520,61 @@ public final class Transaction {
      * because both of them try to modify the same map entry.
      *
      * @param toWaitFor transaction to wait for
-     * @param mapName name of the map containing blocking entry
+     * @param map containing blocking entry
      * @param key of the blocking entry
      * @return true if other transaction was closed and this one can proceed, false if timed out
      */
-    public boolean waitFor(Transaction toWaitFor, String mapName, Object key) {
+    public boolean waitFor(Transaction toWaitFor, MVMap<?,VersionedValue> map, Object key) {
         blockingTransaction = toWaitFor;
-        blockingMapName = mapName;
+        blockingMap = map;
         blockingKey = key;
         if (isDeadlocked(toWaitFor)) {
-            tryThrowDeadLockException(false);
+            StringBuilder details = new StringBuilder(
+                    String.format("Transaction %d has been chosen as a deadlock victim. Details:%n", transactionId));
+            for (Transaction tx = toWaitFor, nextTx; (nextTx = tx.blockingTransaction) != null; tx = nextTx) {
+                details.append(String.format(
+                        "Transaction %d attempts to update map <%s> entry with key <%s> modified by transaction %s%n",
+                        tx.transactionId, tx.blockingMap.getName(), tx.blockingKey, tx.blockingTransaction));
+                if (nextTx == this) {
+                    details.append(String.format(
+                            "Transaction %d attempts to update map <%s> entry with key <%s>"
+                                    + " modified by transaction %s%n",
+                            transactionId, blockingMap.getName(), blockingKey, toWaitFor));
+                    if (isDeadlocked(toWaitFor)) {
+                        throw DataUtils.newIllegalStateException(DataUtils.ERROR_TRANSACTIONS_DEADLOCK,
+                                details.toString());
+                    }
+                }
+            }
         }
-        boolean result = toWaitFor.waitForThisToEnd(timeoutMillis, this);
-        blockingMapName = null;
-        blockingKey = null;
-        blockingTransaction = null;
-        return result;
+
+        try {
+            return toWaitFor.waitForThisToEnd(timeoutMillis);
+        } finally {
+            blockingMap = null;
+            blockingKey = null;
+            blockingTransaction = null;
+        }
     }
 
     private boolean isDeadlocked(Transaction toWaitFor) {
-        // use transaction sequence No as a tie-breaker
-        // the youngest transaction should be selected as a victim
-        Transaction youngest = toWaitFor;
-        int backstop = store.getMaxTransactionId();
         for(Transaction tx = toWaitFor, nextTx;
-            (nextTx = tx.blockingTransaction) != null && tx.getStatus() == Transaction.STATUS_OPEN && backstop > 0;
-            tx = nextTx, --backstop) {
-
-            if (nextTx.sequenceNum > youngest.sequenceNum) {
-                youngest = nextTx;
-            }
-
+            (nextTx = tx.blockingTransaction) != null && tx.getStatus() == Transaction.STATUS_OPEN;
+            tx = nextTx) {
             if (nextTx == this) {
-                if (youngest == this) {
-                    return true;
-                }
-                Transaction btx = youngest.blockingTransaction;
-                if (btx != null) {
-                    youngest.setStatus(STATUS_ROLLING_BACK);
-                    btx.notifyAllWaitingTransactions();
-                    return false;
-                }
+                return true;
             }
         }
         return false;
     }
 
-    private void tryThrowDeadLockException(boolean throwIt) {
-        BitSet visited = new BitSet();
-        StringBuilder details = new StringBuilder(
-                String.format("Transaction %d has been chosen as a deadlock victim. Details:%n", transactionId));
-        for (Transaction tx = this, nextTx;
-                !visited.get(tx.transactionId) &&  (nextTx = tx.blockingTransaction) != null; tx = nextTx) {
-            visited.set(tx.transactionId);
-            details.append(String.format(
-                    "Transaction %d attempts to update map <%s> entry with key <%s> modified by transaction %s%n",
-                    tx.transactionId, tx.blockingMapName, tx.blockingKey, tx.blockingTransaction));
-            if (nextTx == this) {
-                throwIt = true;
-            }
-        }
-        if (throwIt) {
-            throw DataUtils.newMVStoreException(DataUtils.ERROR_TRANSACTIONS_DEADLOCK, "{0}", details.toString());
-        }
-    }
-
-    private synchronized boolean waitForThisToEnd(int millis, Transaction waiter) {
+    private synchronized boolean waitForThisToEnd(int millis) {
         long until = System.currentTimeMillis() + millis;
         notificationRequested = true;
         long state;
         int status;
         while((status = getStatus(state = statusAndLogId.get())) != STATUS_CLOSED
                 && status != STATUS_ROLLED_BACK && !hasRollback(state)) {
-            if (waiter.getStatus() != STATUS_OPEN) {
-                waiter.tryThrowDeadLockException(true);
-            }
             long dur = until - System.currentTimeMillis();
             if(dur <= 0) {
                 return false;
@@ -771,7 +609,7 @@ public final class Transaction {
     }
 
     private static String stateToString(long state) {
-        return getStatusName(getStatus(state)) + (hasRollback(state) ? "<" : "") + " " + getLogId(state);
+        return STATUS_NAMES[getStatus(state)] + (hasRollback(state) ? "<" : "") + " " + getLogId(state);
     }
 
 
@@ -799,9 +637,5 @@ public final class Transaction {
             status |= 1 << STATUS_BITS;
         }
         return ((long)status << LOG_ID_BITS1) | logId;
-    }
-
-    private static String getStatusName(int status) {
-        return status >= 0 && status < STATUS_NAMES.length ? STATUS_NAMES[status] : "UNKNOWN_STATUS_" + status;
     }
 }

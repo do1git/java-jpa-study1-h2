@@ -1,11 +1,11 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  */
 package org.h2.table;
 
-import org.h2.command.query.Select;
+import org.h2.command.dml.Select;
 import org.h2.expression.Expression;
 import org.h2.expression.ExpressionColumn;
 import org.h2.value.Value;
@@ -21,9 +21,7 @@ public interface ColumnResolver {
      *
      * @return the table alias
      */
-    default String getTableAlias() {
-        return null;
-    }
+    String getTableAlias();
 
     /**
      * Get the column list.
@@ -33,61 +31,33 @@ public interface ColumnResolver {
     Column[] getColumns();
 
     /**
-     * Get the column with the specified name.
-     *
-     * @param name
-     *            the column name, must be a derived name if this column
-     *            resolver has a derived column list
-     * @return the column with the specified name, or {@code null}
-     */
-    Column findColumn(String name);
-
-    /**
-     * Get the name of the specified column.
+     * Get derived column name, or {@code null}.
      *
      * @param column column
-     * @return column name
+     * @return derived column name, or {@code null}
      */
-    default String getColumnName(Column column) {
-        return column.getName();
-    }
-
-    /**
-     * Returns whether this column resolver has a derived column list.
-     *
-     * @return {@code true} if this column resolver has a derived column list,
-     *         {@code false} otherwise
-     */
-    default boolean hasDerivedColumnList() {
-        return false;
-    }
+    String getDerivedColumnName(Column column);
 
     /**
      * Get the list of system columns, if any.
      *
      * @return the system columns or null
      */
-    default Column[] getSystemColumns() {
-        return null;
-    }
+    Column[] getSystemColumns();
 
     /**
      * Get the row id pseudo column, if there is one.
      *
      * @return the row id column or null
      */
-    default Column getRowIdColumn() {
-        return null;
-    }
+    Column getRowIdColumn();
 
     /**
-     * Get the schema name or null.
+     * Get the schema name.
      *
-     * @return the schema name or null
+     * @return the schema name
      */
-    default String getSchemaName() {
-        return null;
-    }
+    String getSchemaName();
 
     /**
      * Get the value for the given column.
@@ -102,18 +72,14 @@ public interface ColumnResolver {
      *
      * @return the table filter
      */
-    default TableFilter getTableFilter() {
-        return null;
-    }
+    TableFilter getTableFilter();
 
     /**
      * Get the select statement.
      *
      * @return the select statement
      */
-    default Select getSelect() {
-        return null;
-    }
+    Select getSelect();
 
     /**
      * Get the expression that represents this column.
@@ -122,8 +88,6 @@ public interface ColumnResolver {
      * @param column the column
      * @return the optimized expression
      */
-    default Expression optimize(ExpressionColumn expressionColumn, Column column) {
-        return expressionColumn;
-    }
+    Expression optimize(ExpressionColumn expressionColumn, Column column);
 
 }

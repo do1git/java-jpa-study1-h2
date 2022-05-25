@@ -1,6 +1,6 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  */
 package org.h2.store;
@@ -13,9 +13,6 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.UnknownHostException;
-import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
-import java.nio.file.Paths;
 import java.util.Properties;
 import org.h2.Driver;
 import org.h2.api.ErrorCode;
@@ -41,6 +38,7 @@ public class FileLock implements Runnable {
     private static final String MAGIC = "FileLock";
     private static final String FILE = "file";
     private static final String SOCKET = "socket";
+    private static final String SERIALIZED = "serialized";
     private static final int RANDOM_BYTES = 16;
     private static final int SLEEP_GAP = 25;
     private static final int TIME_GRANULARITY = 2000;
@@ -103,7 +101,7 @@ public class FileLock implements Runnable {
     public synchronized void lock(FileLockMethod fileLockMethod) {
         checkServer();
         if (locked) {
-            throw DbException.getInternalError("already locked");
+            DbException.throwInternalError("already locked");
         }
         switch (fileLockMethod) {
         case FILE:
@@ -111,6 +109,9 @@ public class FileLock implements Runnable {
             break;
         case SOCKET:
             lockSocket();
+            break;
+        case SERIALIZED:
+            lockSerialized();
             break;
         case FS:
         case NO:
@@ -186,7 +187,7 @@ public class FileLock implements Runnable {
             try (OutputStream out = FileUtils.newOutputStream(fileName, false)) {
                 properties.store(out, MAGIC);
             }
-            lastWrite = aggressiveLastModified(fileName);
+            lastWrite = FileUtils.lastModified(fileName);
             if (trace.isDebugEnabled()) {
                 trace.debug("save " + properties);
             }
@@ -194,28 +195,6 @@ public class FileLock implements Runnable {
         } catch (IOException e) {
             throw getExceptionFatal("Could not save properties " + fileName, e);
         }
-    }
-
-    /**
-     * Aggressively read last modified time, to work-around remote filesystems.
-     *
-     * @param fileName file name to check
-     * @return last modified date/time in milliseconds UTC
-     */
-    private static long aggressiveLastModified(String fileName) {
-        /*
-         * Some remote filesystem, e.g. SMB on Windows, can cache metadata for
-         * 5-10 seconds. To work around that, do a one-byte read from the
-         * underlying file, which has the effect of invalidating the metadata
-         * cache.
-         */
-        try {
-            try (FileChannel f = FileChannel.open(Paths.get(fileName), FileUtils.RWS, FileUtils.NO_ATTRIBUTES);) {
-                ByteBuffer b = ByteBuffer.wrap(new byte[1]);
-                f.read(b);
-            }
-        } catch (IOException ignoreEx) {}
-        return FileUtils.lastModified(fileName);
     }
 
     private void checkServer() {
@@ -278,7 +257,7 @@ public class FileLock implements Runnable {
 
     private void waitUntilOld() {
         for (int i = 0; i < 2 * TIME_GRANULARITY / SLEEP_GAP; i++) {
-            long last = aggressiveLastModified(fileName);
+            long last = FileUtils.lastModified(fileName);
             long dist = System.currentTimeMillis() - last;
             if (dist < -TIME_GRANULARITY) {
                 // lock file modified in the future -
@@ -306,6 +285,26 @@ public class FileLock implements Runnable {
         String random = StringUtils.convertBytesToHex(bytes);
         uniqueId = Long.toHexString(System.currentTimeMillis()) + random;
         properties.setProperty("id", uniqueId);
+    }
+
+    private void lockSerialized() {
+        method = SERIALIZED;
+        FileUtils.createDirectories(FileUtils.getParent(fileName));
+        if (FileUtils.createFile(fileName)) {
+            properties = new SortedProperties();
+            properties.setProperty("method", String.valueOf(method));
+            setUniqueId();
+            save();
+        } else {
+            while (true) {
+                try {
+                    properties = load();
+                } catch (DbException e) {
+                    // ignore
+                }
+                return;
+            }
+        }
     }
 
     private void lockFile() {
@@ -355,7 +354,7 @@ public class FileLock implements Runnable {
         FileUtils.createDirectories(FileUtils.getParent(fileName));
         if (!FileUtils.createFile(fileName)) {
             waitUntilOld();
-            long read = aggressiveLastModified(fileName);
+            long read = FileUtils.lastModified(fileName);
             Properties p2 = load();
             String m2 = p2.getProperty("method", SOCKET);
             if (m2.equals(FILE)) {
@@ -389,7 +388,7 @@ public class FileLock implements Runnable {
                     throw getExceptionFatal("IOException", null);
                 }
             }
-            if (read != aggressiveLastModified(fileName)) {
+            if (read != FileUtils.lastModified(fileName)) {
                 throw getExceptionFatal("Concurrent update", null);
             }
             FileUtils.delete(fileName);
@@ -462,10 +461,13 @@ public class FileLock implements Runnable {
             return FileLockMethod.NO;
         } else if (method.equalsIgnoreCase("SOCKET")) {
             return FileLockMethod.SOCKET;
+        } else if (method.equalsIgnoreCase("SERIALIZED")) {
+            return FileLockMethod.SERIALIZED;
         } else if (method.equalsIgnoreCase("FS")) {
             return FileLockMethod.FS;
         } else {
-            throw DbException.get(ErrorCode.UNSUPPORTED_LOCK_METHOD_1, method);
+            throw DbException.get(
+                    ErrorCode.UNSUPPORTED_LOCK_METHOD_1, method);
         }
     }
 
@@ -480,7 +482,7 @@ public class FileLock implements Runnable {
                 // trace.debug("watchdog check");
                 try {
                     if (!FileUtils.exists(fileName) ||
-                            aggressiveLastModified(fileName) != lastWrite) {
+                            FileUtils.lastModified(fileName) != lastWrite) {
                         save();
                     }
                     Thread.sleep(sleep);

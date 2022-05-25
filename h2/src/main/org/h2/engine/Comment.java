@@ -1,6 +1,6 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  */
 package org.h2.engine;
@@ -13,7 +13,7 @@ import org.h2.util.StringUtils;
 /**
  * Represents a database object comment.
  */
-public final class Comment extends DbObject {
+public class Comment extends DbObjectBase {
 
     private final int objectType;
     private final String quotedObjectName;
@@ -22,12 +22,12 @@ public final class Comment extends DbObject {
     public Comment(Database database, int id, DbObject obj) {
         super(database, id,  getKey(obj), Trace.DATABASE);
         this.objectType = obj.getType();
-        this.quotedObjectName = obj.getSQL(DEFAULT_SQL_FLAGS);
+        this.quotedObjectName = obj.getSQL(true);
     }
 
     @Override
     public String getCreateSQLForCopy(Table table, String quotedName) {
-        throw DbException.getInternalError(toString());
+        throw DbException.throwInternalError(toString());
     }
 
     private static String getTypeName(int type) {
@@ -62,6 +62,11 @@ public final class Comment extends DbObject {
     }
 
     @Override
+    public String getDropSQL() {
+        return null;
+    }
+
+    @Override
     public String getCreateSQL() {
         StringBuilder buff = new StringBuilder("COMMENT ON ");
         buff.append(getTypeName(objectType)).append(' ').
@@ -80,13 +85,13 @@ public final class Comment extends DbObject {
     }
 
     @Override
-    public void removeChildrenAndResources(SessionLocal session) {
+    public void removeChildrenAndResources(Session session) {
         database.removeMeta(session, getId());
     }
 
     @Override
     public void checkRename() {
-        throw DbException.getInternalError();
+        DbException.throwInternalError();
     }
 
     /**
@@ -98,7 +103,7 @@ public final class Comment extends DbObject {
      */
     static String getKey(DbObject obj) {
         StringBuilder builder = new StringBuilder(getTypeName(obj.getType())).append(' ');
-        obj.getSQL(builder, DEFAULT_SQL_FLAGS);
+        obj.getSQL(builder, true);
         return builder.toString();
     }
 

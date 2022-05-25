@@ -1,6 +1,6 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  */
 package org.h2.mvstore.db;
@@ -19,6 +19,7 @@ import org.h2.result.ResultExternal;
 import org.h2.result.SortOrder;
 import org.h2.store.fs.FileUtils;
 import org.h2.util.TempFileDeleter;
+import org.h2.value.TypeInfo;
 import org.h2.value.Value;
 
 /**
@@ -70,22 +71,16 @@ public abstract class MVTempResult implements ResultExternal {
      *            indexes of distinct columns for DISTINCT ON results
      * @param visibleColumnCount
      *            count of visible columns
-     * @param resultColumnCount
-     *            the number of columns including visible columns and additional
-     *            virtual columns for ORDER BY and DISTINCT ON clauses
      * @param sort
      *            sort order, or {@code null}
      * @return temporary result
      */
     public static ResultExternal of(Database database, Expression[] expressions, boolean distinct,
-            int[] distinctIndexes, int visibleColumnCount, int resultColumnCount, SortOrder sort) {
+            int[] distinctIndexes, int visibleColumnCount, SortOrder sort) {
         return distinct || distinctIndexes != null || sort != null
-                ? new MVSortedTempResult(database, expressions, distinct, distinctIndexes, visibleColumnCount,
-                        resultColumnCount, sort)
-                : new MVPlainTempResult(database, expressions, visibleColumnCount, resultColumnCount);
+                ? new MVSortedTempResult(database, expressions, distinct, distinctIndexes, visibleColumnCount, sort)
+                : new MVPlainTempResult(database, expressions, visibleColumnCount);
     }
-
-    private final Database database;
 
     /**
      * MVStore.
@@ -102,10 +97,7 @@ public abstract class MVTempResult implements ResultExternal {
      */
     final int visibleColumnCount;
 
-    /**
-     * Total count of columns.
-     */
-    final int resultColumnCount;
+    final boolean hasEnum;
 
     /**
      * Count of rows. Used only in a root results, copies always have 0 value.
@@ -150,11 +142,10 @@ public abstract class MVTempResult implements ResultExternal {
      */
     MVTempResult(MVTempResult parent) {
         this.parent = parent;
-        this.database = parent.database;
         this.store = parent.store;
         this.expressions = parent.expressions;
         this.visibleColumnCount = parent.visibleColumnCount;
-        this.resultColumnCount = parent.resultColumnCount;
+        this.hasEnum = parent.hasEnum;
         this.tempFileDeleter = null;
         this.closeable = null;
         this.fileRef = null;
@@ -169,22 +160,26 @@ public abstract class MVTempResult implements ResultExternal {
      *            column expressions
      * @param visibleColumnCount
      *            count of visible columns
-     * @param resultColumnCount
-     *            total count of columns
      */
-    MVTempResult(Database database, Expression[] expressions, int visibleColumnCount, int resultColumnCount) {
-        this.database = database;
+    MVTempResult(Database database, Expression[] expressions, int visibleColumnCount) {
         try {
             String fileName = FileUtils.createTempFile("h2tmp", Constants.SUFFIX_TEMP_FILE, true);
             Builder builder = new MVStore.Builder().fileName(fileName).cacheSize(0).autoCommitDisabled();
             byte[] key = database.getFileEncryptionKey();
             if (key != null) {
-                builder.encryptionKey(Store.decodePassword(key));
+                builder.encryptionKey(MVTableEngine.decodePassword(key));
             }
             store = builder.open();
             this.expressions = expressions;
             this.visibleColumnCount = visibleColumnCount;
-            this.resultColumnCount = resultColumnCount;
+            boolean hasEnum = false;
+            for (Expression e : expressions) {
+                if (e.getType().getValueType() == Value.ENUM) {
+                    hasEnum = true;
+                    break;
+                }
+            }
+            this.hasEnum = hasEnum;
             tempFileDeleter = database.getTempFileDeleter();
             closeable = new CloseImpl(store, fileName);
             fileRef = tempFileDeleter.addFile(closeable, this);
@@ -225,6 +220,20 @@ public abstract class MVTempResult implements ResultExternal {
 
     private void delete() {
         tempFileDeleter.deleteFile(fileRef, closeable);
+    }
+
+    /**
+     * If any value in the rows is a ValueEnum, apply custom type conversion.
+     *
+     * @param row the array of values (modified in-place if needed)
+     */
+    final void fixEnum(Value[] row) {
+        for (int i = 0, l = expressions.length; i < l; i++) {
+            TypeInfo type = expressions[i].getType();
+            if (type.getValueType() == Value.ENUM) {
+                row[i] = type.getExtTypeInfo().cast(row[i]);
+            }
+        }
     }
 
 }

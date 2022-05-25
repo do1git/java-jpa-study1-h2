@@ -1,6 +1,6 @@
 /*
- * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Copyright 2004-2019 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (http://h2database.com/html/license.html).
  * Initial Developer: Jason Brittain (jason.brittain at gmail.com)
  */
 package org.h2.mode;
@@ -11,20 +11,19 @@ import java.util.HashMap;
 import java.util.Locale;
 
 import org.h2.api.ErrorCode;
-import org.h2.engine.SessionLocal;
+import org.h2.engine.Database;
+import org.h2.engine.Session;
 import org.h2.expression.Expression;
 import org.h2.expression.ValueExpression;
+import org.h2.expression.function.Function;
+import org.h2.expression.function.FunctionInfo;
 import org.h2.message.DbException;
-import org.h2.util.DateTimeUtils;
 import org.h2.util.StringUtils;
 import org.h2.value.TypeInfo;
 import org.h2.value.Value;
-import org.h2.value.ValueBigint;
-import org.h2.value.ValueInteger;
+import org.h2.value.ValueInt;
 import org.h2.value.ValueNull;
-import org.h2.value.ValueTimestamp;
-import org.h2.value.ValueTimestampTimeZone;
-import org.h2.value.ValueVarchar;
+import org.h2.value.ValueString;
 
 /**
  * This class implements some MySQL-specific functions.
@@ -32,20 +31,19 @@ import org.h2.value.ValueVarchar;
  * @author Jason Brittain
  * @author Thomas Mueller
  */
-public final class FunctionsMySQL extends ModeFunction {
+public class FunctionsMySQL extends FunctionsBase {
 
-    private static final int UNIX_TIMESTAMP = 1001, FROM_UNIXTIME = 1002, DATE = 1003, LAST_INSERT_ID = 1004;
+    private static final int UNIX_TIMESTAMP = 1001, FROM_UNIXTIME = 1002, DATE = 1003;
 
     private static final HashMap<String, FunctionInfo> FUNCTIONS = new HashMap<>();
 
     static {
-        FUNCTIONS.put("UNIX_TIMESTAMP",
-                new FunctionInfo("UNIX_TIMESTAMP", UNIX_TIMESTAMP, VAR_ARGS, Value.INTEGER, false, false));
-        FUNCTIONS.put("FROM_UNIXTIME",
-                new FunctionInfo("FROM_UNIXTIME", FROM_UNIXTIME, VAR_ARGS, Value.VARCHAR, false, true));
-        FUNCTIONS.put("DATE", new FunctionInfo("DATE", DATE, 1, Value.DATE, false, true));
-        FUNCTIONS.put("LAST_INSERT_ID",
-                new FunctionInfo("LAST_INSERT_ID", LAST_INSERT_ID, VAR_ARGS, Value.BIGINT, false, false));
+        FUNCTIONS.put("UNIX_TIMESTAMP", new FunctionInfo("UNIX_TIMESTAMP", UNIX_TIMESTAMP,
+                VAR_ARGS, Value.INT, false, false, false, true));
+        FUNCTIONS.put("FROM_UNIXTIME", new FunctionInfo("FROM_UNIXTIME", FROM_UNIXTIME,
+                VAR_ARGS, Value.STRING, false, true, false, true));
+        FUNCTIONS.put("DATE", new FunctionInfo("DATE", DATE,
+                1, Value.DATE, false, true, false, true));
     }
 
     /**
@@ -57,7 +55,7 @@ public final class FunctionsMySQL extends ModeFunction {
     /**
      * Format replacements for MySQL date formats.
      * See
-     * https://dev.mysql.com/doc/refman/5.1/en/date-and-time-functions.html#function_date-format
+     * http://dev.mysql.com/doc/refman/5.1/en/date-and-time-functions.html#function_date-format
      */
     private static final String[] FORMAT_REPLACE = {
             "%a", "EEE",
@@ -87,32 +85,31 @@ public final class FunctionsMySQL extends ModeFunction {
     };
 
     /**
+     * Get the seconds since 1970-01-01 00:00:00 UTC.
+     * See
+     * http://dev.mysql.com/doc/refman/5.1/en/date-and-time-functions.html#function_unix-timestamp
+     *
+     * @return the current timestamp in seconds (not milliseconds).
+     */
+    public static int unixTimestamp() {
+        return (int) (System.currentTimeMillis() / 1000L);
+    }
+
+    /**
      * Get the seconds since 1970-01-01 00:00:00 UTC of the given timestamp.
      * See
-     * https://dev.mysql.com/doc/refman/8.0/en/date-and-time-functions.html#function_unix-timestamp
+     * http://dev.mysql.com/doc/refman/5.1/en/date-and-time-functions.html#function_unix-timestamp
      *
-     * @param session the session
-     * @param value the timestamp
-     * @return the timestamp in seconds since EPOCH
+     * @param timestamp the timestamp
+     * @return the current timestamp in seconds (not milliseconds).
      */
-    public static int unixTimestamp(SessionLocal session, Value value) {
-        long seconds;
-        if (value instanceof ValueTimestampTimeZone) {
-            ValueTimestampTimeZone t = (ValueTimestampTimeZone) value;
-            long timeNanos = t.getTimeNanos();
-            seconds = DateTimeUtils.absoluteDayFromDateValue(t.getDateValue()) * DateTimeUtils.SECONDS_PER_DAY
-                    + timeNanos / DateTimeUtils.NANOS_PER_SECOND - t.getTimeZoneOffsetSeconds();
-        } else {
-            ValueTimestamp t = (ValueTimestamp) value.convertTo(TypeInfo.TYPE_TIMESTAMP, session);
-            long timeNanos = t.getTimeNanos();
-            seconds = session.currentTimeZone().getEpochSecondsFromLocal(t.getDateValue(), timeNanos);
-        }
-        return (int) seconds;
+    public static int unixTimestamp(java.sql.Timestamp timestamp) {
+        return (int) (timestamp.getTime() / 1000L);
     }
 
     /**
      * See
-     * https://dev.mysql.com/doc/refman/5.1/en/date-and-time-functions.html#function_from-unixtime
+     * http://dev.mysql.com/doc/refman/5.1/en/date-and-time-functions.html#function_from-unixtime
      *
      * @param seconds The current timestamp in seconds.
      * @return a formatted date/time String in the format "yyyy-MM-dd HH:mm:ss".
@@ -120,12 +117,12 @@ public final class FunctionsMySQL extends ModeFunction {
     public static String fromUnixTime(int seconds) {
         SimpleDateFormat formatter = new SimpleDateFormat(DATE_TIME_FORMAT,
                 Locale.ENGLISH);
-        return formatter.format(new Date(seconds * 1_000L));
+        return formatter.format(new Date(seconds * 1000L));
     }
 
     /**
      * See
-     * https://dev.mysql.com/doc/refman/5.1/en/date-and-time-functions.html#function_from-unixtime
+     * http://dev.mysql.com/doc/refman/5.1/en/date-and-time-functions.html#function_from-unixtime
      *
      * @param seconds The current timestamp in seconds.
      * @param format The format of the date/time String to return.
@@ -134,7 +131,7 @@ public final class FunctionsMySQL extends ModeFunction {
     public static String fromUnixTime(int seconds, String format) {
         format = convertToSimpleDateFormat(format);
         SimpleDateFormat formatter = new SimpleDateFormat(format, Locale.ENGLISH);
-        return formatter.format(new Date(seconds * 1_000L));
+        return formatter.format(new Date(seconds * 1000L));
     }
 
     private static String convertToSimpleDateFormat(String format) {
@@ -148,17 +145,19 @@ public final class FunctionsMySQL extends ModeFunction {
     /**
      * Returns mode-specific function for a given name, or {@code null}.
      *
+     * @param database
+     *            the database
      * @param upperName
      *            the upper-case name of a function
      * @return the function with specified name or {@code null}
      */
-    public static FunctionsMySQL getFunction(String upperName) {
+    public static Function getFunction(Database database, String upperName) {
         FunctionInfo info = FUNCTIONS.get(upperName);
-        return info != null ? new FunctionsMySQL(info) : null;
+        return info != null ? new FunctionsMySQL(database, info) : null;
     }
 
-    FunctionsMySQL(FunctionInfo info) {
-        super(info);
+    FunctionsMySQL(Database database, FunctionInfo info) {
+        super(database, info);
     }
 
     @Override
@@ -167,7 +166,7 @@ public final class FunctionsMySQL extends ModeFunction {
         switch (info.type) {
         case UNIX_TIMESTAMP:
             min = 0;
-            max = 1;
+            max = 2;
             break;
         case FROM_UNIXTIME:
             min = 1;
@@ -177,12 +176,9 @@ public final class FunctionsMySQL extends ModeFunction {
             min = 1;
             max = 1;
             break;
-        case LAST_INSERT_ID:
-            min = 0;
-            max = 1;
-            break;
         default:
-            throw DbException.getInternalError("type=" + info.type);
+            DbException.throwInternalError("type=" + info.type);
+            return;
         }
         if (len < min || len > max) {
             throw DbException.get(ErrorCode.INVALID_PARAMETER_COUNT_2, info.name, min + ".." + max);
@@ -190,67 +186,59 @@ public final class FunctionsMySQL extends ModeFunction {
     }
 
     @Override
-    public Expression optimize(SessionLocal session) {
-        boolean allConst = optimizeArguments(session);
-        type = TypeInfo.getTypeInfo(info.returnDataType);
+    public Expression optimize(Session session) {
+        boolean allConst = info.deterministic;
+        for (int i = 0; i < args.length; i++) {
+            Expression e = args[i];
+            if (e == null) {
+                continue;
+            }
+            e = e.optimize(session);
+            args[i] = e;
+            if (!e.isConstant()) {
+                allConst = false;
+            }
+        }
         if (allConst) {
             return ValueExpression.get(getValue(session));
         }
+        type = TypeInfo.getTypeInfo(info.returnDataType);
         return this;
     }
 
     @Override
-    public Value getValue(SessionLocal session) {
+    protected Value getValueWithArgs(Session session, Expression[] args) {
         Value[] values = new Value[args.length];
         Value v0 = getNullOrValue(session, args, values, 0);
         Value v1 = getNullOrValue(session, args, values, 1);
         Value result;
         switch (info.type) {
         case UNIX_TIMESTAMP:
-            result = ValueInteger.get(unixTimestamp(session, v0 == null ? session.currentTimestamp() : v0));
+            result = ValueInt.get(v0 == null ? unixTimestamp() : unixTimestamp(v0.getTimestamp()));
             break;
         case FROM_UNIXTIME:
-            result = ValueVarchar.get(
+            result = ValueString.get(
                     v1 == null ? fromUnixTime(v0.getInt()) : fromUnixTime(v0.getInt(), v1.getString()));
             break;
         case DATE:
             switch (v0.getValueType()) {
-            case Value.NULL:
             case Value.DATE:
                 result = v0;
                 break;
             default:
                 try {
-                    v0 = v0.convertTo(TypeInfo.TYPE_TIMESTAMP, session);
+                    v0 = v0.convertTo(Value.TIMESTAMP);
                 } catch (DbException ex) {
-                    result = ValueNull.INSTANCE;
-                    break;
+                    v0 = ValueNull.INSTANCE;
                 }
                 //$FALL-THROUGH$
             case Value.TIMESTAMP:
             case Value.TIMESTAMP_TZ:
-                result = v0.convertToDate(session);
-            }
-            break;
-        case LAST_INSERT_ID:
-            if (args.length == 0) {
-                result = session.getLastIdentity();
-                if (result == ValueNull.INSTANCE) {
-                    result = ValueBigint.get(0L);
-                } else {
-                    result = result.convertToBigint(null);
-                }
-            } else {
-                result = v0;
-                if (result == ValueNull.INSTANCE) {
-                    session.setLastIdentity(ValueNull.INSTANCE);
-                } else {
-                    session.setLastIdentity(result = result.convertToBigint(null));
-                }
+                result = v0.convertTo(Value.DATE);
             }
             break;
         default:
-            throw DbException.getInternalError("type=" + info.type);
+            throw DbException.throwInternalError("type=" + info.type);
         }
         return result;
     }
